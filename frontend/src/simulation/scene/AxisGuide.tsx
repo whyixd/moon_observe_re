@@ -55,7 +55,7 @@ export function AxisGuide({ sceneMode }: { sceneMode: SceneMode }) {
   }, [])
 
   return (
-    <group position={sceneMode === 'nine' ? [-3.5, -0.7, 2.3] : [-2.5, -0.3, 1.8]}>
+    <group position={sceneMode === 'all' ? [-9, -0.7, 3] : [-2.5, -0.3, 1.8]}>
       <axesHelper ref={helperRef} args={[AXIS_LENGTH]} />
       {AXES.map(({ label, endpoint }, index) => (
         <sprite key={label} position={endpoint} scale={[0.3, 0.3, 1]}>

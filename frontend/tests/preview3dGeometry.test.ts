@@ -41,9 +41,9 @@ describe('3D semicircle geometry', () => {
       (point, index) => distance(firstArc[index], point),
     )
 
-    expect(LEDS_PER_ARC).toBe(156)
-    expect(firstArc).toHaveLength(156)
-    expect(secondArc).toHaveLength(156)
+    expect(LEDS_PER_ARC).toBe(152)
+    expect(firstArc).toHaveLength(152)
+    expect(secondArc).toHaveLength(152)
     expect(Math.max(...firstDistances) - Math.min(...firstDistances))
       .toBeLessThan(1e-10)
   })

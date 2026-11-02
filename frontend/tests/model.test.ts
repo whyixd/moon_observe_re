@@ -6,15 +6,21 @@ import {
   controllerFrameAtTime,
   controllerFrameStartTime,
   DEFAULT_SETTINGS,
-  NINE_UNIT_ARCH_HEIGHT,
-  NINE_UNIT_SPACING,
+  ALL_UNIT_SCALE,
+  applyMotorCommand,
   degreesPerControllerFrame,
+  DEFAULT_MOTOR_RPM,
+  longnUnitPlacement,
+  retimeRotor,
+  rotorAngle,
+  signedRpm,
+  type UnitMotor,
   normalizedAngle,
   simulatedUnknownPhase,
   stripCoordinate,
   unitRelativeHeightAtPhase,
 } from '../src/simulation/model'
-import { LEDS_PER_ARC } from '../src/preview3d/geometry'
+import { ARC_RADIUS, LEDS_PER_ARC } from '../src/preview3d/geometry'
 
 describe('rotor and controller clocks', () => {
   it('rotates 54 degrees during one 40 FPS frame at 360 RPM', () => {
@@ -61,9 +67,11 @@ describe('open-loop top-third sampling', () => {
   })
 })
 describe('3D semicircle effect mapping', () => {
-  it('uses the tested 156 LED positions for each arc', () => {
+  it('defaults to the LongN 152 LEDs x 5 units until the backend says otherwise', () => {
     expect(DEFAULT_SETTINGS.ledCount).toBe(LEDS_PER_ARC)
-    expect(LEDS_PER_ARC).toBe(156)
+    expect(LEDS_PER_ARC).toBe(152)
+    expect(DEFAULT_SETTINGS.unitCount).toBe(5)
+    expect(DEFAULT_SETTINGS.motorRpm).toEqual({ mid: 130, max: 500 })
   })
 })
 
@@ -83,58 +91,98 @@ describe('diameter strip geometry', () => {
   })
 })
 
-describe('multi-unit layout', () => {
-  it('lays the nine units on a circular arc peaking at Unit 5', () => {
-    const units = buildUnitLayouts('nine', 40, 2)
+describe('LongN multi-unit layout', () => {
+  const units = buildUnitLayouts('all', 5, 40, 2)
+  const apex = (index: number) => [Math.sin(units[index].yawRadians), Math.cos(units[index].yawRadians)]
 
-    expect(DEFAULT_SETTINGS.unitPhaseStepDegrees).toBe(40)
+  it('ports calcMotorPosition for five units', () => {
+    // LongN/Simulation.pde: X = map(i, 0, 4, -595, 595), Y = -500 sin((i+1)π/6) + 500/3,
+    // Z = map(cos((i+1)π/6 + π), -1, 1, 200, 700) - 160, Angle = i·(3π/2)/4 + π/2.
+    expect(longnUnitPlacement(0, 5).x).toBeCloseTo(-595)
+    expect(longnUnitPlacement(2, 5).x).toBeCloseTo(0)
+    expect(longnUnitPlacement(2, 5).y).toBeCloseTo(-500 + 500 / 3)
+    expect(longnUnitPlacement(0, 5).z).toBeCloseTo(450 - 250 * Math.cos(Math.PI / 6) - 160)
+    expect(longnUnitPlacement(4, 5).angle).toBeCloseTo(2 * Math.PI)
+    expect(longnUnitPlacement(0, 1)).toMatchObject({ x: 0, angle: Math.PI / 2 })
+  })
 
-    expect(units).toHaveLength(9)
+  it('maps Processing (X, Y toward viewer, Z up) onto three.js and keeps LongN proportions', () => {
+    expect(units).toHaveLength(5)
+    const scale = (ARC_RADIUS * ALL_UNIT_SCALE) / 35
     units.forEach((unit, index) => {
+      const placement = longnUnitPlacement(index, 5)
       expect(unit.index).toBe(index)
-      expect(unit.x).toBeCloseTo((index - 4) * NINE_UNIT_SPACING)
-      expect(unit.y).toBeCloseTo(units[8 - index].y)
+      expect(unit.x).toBeCloseTo(placement.x * scale)
+      expect(unit.y).toBeCloseTo((placement.z - longnUnitPlacement(0, 5).z) * scale)
+      expect(unit.z).toBeCloseTo(units[4 - index].z)
+      expect(unit.scale).toBe(ALL_UNIT_SCALE)
       expect(unit.tiltXRadians).toBeCloseTo(Math.PI / 2)
+      expect(unit.phaseOffsetRadians).toBeCloseTo(index * 40 * Math.PI / 180)
       expect(unit.frameOffset).toBe(index * 2)
     })
     expect(units[0].y).toBeCloseTo(0)
-    expect(units[4].y).toBeCloseTo(NINE_UNIT_ARCH_HEIGHT)
-    const centerY = units[4].y - Math.hypot(units[0].x, units[0].y - units[4].y) ** 2
-      / (2 * (units[4].y - units[0].y))
-    units.forEach((unit) => {
-      expect(Math.hypot(unit.x, unit.y - centerY)).toBeCloseTo(units[4].y - centerY)
+    expect(units.map((unit) => unit.y)).toEqual([...units.map((unit) => unit.y)].sort((a, b) => a - b))
+    expect(units[2].z).toBeLessThan(units[0].z)  // the middle unit stands farthest back
+    expect(units.reduce((sum, unit) => sum + unit.z, 0)).toBeCloseTo(0)
+  })
+
+  it('points each apex like a moon phase: left, back-left, back-right, front-right, front', () => {
+    const expected = [[-1, 0], [-0.383, -0.924], [0.707, -0.707], [0.924, 0.383], [0, 1]]
+    expected.forEach(([x, z], index) => {
+      expect(apex(index)[0]).toBeCloseTo(x, 2)
+      expect(apex(index)[1]).toBeCloseTo(z, 2)
     })
   })
 
-  it('turns each outer pair toward Unit 5 by another 45 degrees', () => {
-    const units = buildUnitLayouts('nine', 40, 2)
-
-    units.forEach((unit, index) => {
-      expect(unit.yawRadians).toBeCloseTo((4 - index) * Math.PI / 4)
-    })
-  })
-
-  it('preserves the original per-unit rotor phase offsets', () => {
-    const units = buildUnitLayouts('nine', 40, 2)
-
-    units.forEach((unit, index) => {
-      expect(unit.phaseOffsetRadians).toBeCloseTo(
-        index * 40 * Math.PI / 180,
-      )
-    })
+  it('follows the configured unit count', () => {
+    expect(buildUnitLayouts('all', 3, 0, 0)).toHaveLength(3)
+    expect(buildUnitLayouts('all', 1, 0, 0)[0]).toMatchObject({ x: 0, y: 0, z: 0 })
   })
 
   it('keeps single-unit mode unshifted and full scale', () => {
-    expect(buildUnitLayouts('single', 40, 2)).toEqual([{
+    expect(buildUnitLayouts('single', 5, 40, 2)).toEqual([{
       index: 0,
       x: 0,
       y: 0,
+      z: 0,
       scale: 1,
       phaseOffsetRadians: 0,
       tiltXRadians: Math.PI / 2,
       yawRadians: 0,
       frameOffset: 0,
     }])
+  })
+})
+
+describe('per-unit motors', () => {
+  const stopped: UnitMotor = { speed: 'stop', direction: 'cw' }
+
+  it('signs the rpm by direction and stops at zero', () => {
+    expect(signedRpm({ speed: 'max', direction: 'cw' }, DEFAULT_MOTOR_RPM)).toBe(500)
+    expect(signedRpm({ speed: 'mid', direction: 'ccw' }, DEFAULT_MOTOR_RPM)).toBe(-130)
+    expect(signedRpm({ speed: 'stop', direction: 'ccw' }, DEFAULT_MOTOR_RPM)).toBe(0)
+  })
+
+  it('keeps the rotor angle continuous across speed changes', () => {
+    let rotor = { time: 0, angle: 1, rpm: 0 }
+    rotor = retimeRotor(rotor, 2, 60)  // stopped for 2 s, then 1 turn per second
+    expect(rotorAngle(rotor, 2)).toBeCloseTo(1)
+    expect(rotorAngle(rotor, 2.25)).toBeCloseTo(1 + Math.PI / 2)
+    const same = retimeRotor(rotor, 3, 60)
+    expect(same).toBe(rotor)
+    rotor = retimeRotor(rotor, 2.5, -120)  // reverse at 2 turns per second
+    expect(rotorAngle(rotor, 2.5)).toBeCloseTo(1 + Math.PI)
+    expect(rotorAngle(rotor, 2.75)).toBeCloseTo(1)
+  })
+
+  it('applies commands like the backend: all units by default, omitted fields kept', () => {
+    const motors = [stopped, stopped, stopped]
+    const all = applyMotorCommand(motors, { speed: 'max' })
+    expect(all.map((motor) => motor.speed)).toEqual(['max', 'max', 'max'])
+    const one = applyMotorCommand(all, { unitIds: [2], direction: 'ccw' })
+    expect(one).toEqual([
+      { speed: 'max', direction: 'cw' }, { speed: 'max', direction: 'ccw' }, { speed: 'max', direction: 'cw' },
+    ])
   })
 })
 

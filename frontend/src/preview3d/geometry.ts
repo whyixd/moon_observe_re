@@ -2,7 +2,8 @@ export type SemicirclePlane = 'xy' | 'zy'
 
 export type Point3 = readonly [x: number, y: number, z: number]
 
-export const LEDS_PER_ARC = 156
+/** 離線預設；連上後端時改用後端的 render.pixels。 / Offline default; the backend's render.pixels when connected. */
+export const LEDS_PER_ARC = 152
 export const ARC_RADIUS = 2.5
 export const ARC_CLEARANCE = 0.035
 

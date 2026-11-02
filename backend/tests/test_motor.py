@@ -151,6 +151,10 @@ class MotorApiTests(unittest.TestCase):
         self.assertEqual(self.motor.state(), state["motor"])
         self.assertEqual(self.hardware.state(), state["hardware"])
         self.assertEqual("center-out-sine", state["preset"]["effectId"])
+        self.assertEqual({
+            "fps": 40, "pixels": 152, "unitCount": 5, "motorRpm": {"mid": 130, "max": 500}, "sourceIp": None,
+            "targets": [{"unitId": unit_id, "ip": f"127.0.0.{unit_id}", "universes": [0, 1]} for unit_id in range(1, 6)],
+        }, state["output"])
 
     def test_motor_command_returns_full_state_without_touching_preset(self):
         state = self.put("/api/motor", {"unitIds": [1, 5], "speed": "max", "direction": "ccw"})

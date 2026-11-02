@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { applyBackendPreset, getBackendPlayback, getBackendSequence, getBackendState, getWeatherState, restartBackendPlayback, saveBackendSequence, setBackendMotor, type BackendPlayback, type BackendState, type WeatherState } from './backendApi'
+import { applyBackendPreset, getBackendPlayback, getBackendSequence, getBackendState, getWeatherState, restartBackendPlayback, saveBackendSequence, setBackendMoonCorrection, setBackendMotor, type BackendPlayback, type BackendState, type MotorCommand, type WeatherState } from './backendApi'
 import { ControlPanel } from './components/ControlPanel'
 import {
   createDefaultEffectPreset,
@@ -11,10 +11,13 @@ import {
   type UnitVariation,
 } from './effects'
 import {
+  applyMotorCommand,
   DEFAULT_SETTINGS,
   degreesPerControllerFrame,
+  type MotorRpm,
   type SceneMode,
   type SimulationSettings,
+  type UnitMotor,
 } from './simulation/model'
 import { liveBackendFrame } from './playbackProgress'
 import { compileSequence, createSequenceStep, defaultPlaybackRule, resolveSequenceFrame, sequenceSeekFrame, type SequenceSeek, type PlaybackRule, type SequenceDocument, type SequenceEnding, type SequenceStep, type TransitionKind } from './simulation/sequence'
@@ -27,6 +30,28 @@ const INITIAL_DIAGNOSTICS: Diagnostics = {
   globalFrame: 0,
   cyclePhase: 0,
   simulationTime: 0,
+  rpm: 0,
+}
+
+// 模擬模式的馬達預設全速順轉（演出狀態）；後端開機時則一律停止。
+// Simulation motors default to max/cw (the show state); the backend always starts stopped.
+const LOCAL_MOTOR: UnitMotor = { speed: 'max', direction: 'cw' }
+const STOPPED_MOTOR: UnitMotor = { speed: 'stop', direction: 'cw' }
+
+function fitMotors(motors: UnitMotor[], count: number): UnitMotor[] {
+  return Array.from({ length: count }, (_, index) => motors[index] ?? LOCAL_MOTOR)
+}
+
+type BackendOutput = { fps: number; pixels: number; unitCount: number; motorRpm: MotorRpm }
+
+function withBackendOutput(current: SimulationSettings, output: BackendOutput): SimulationSettings {
+  return {
+    ...current,
+    controllerFps: output.fps,
+    ledCount: output.pixels,
+    unitCount: output.unitCount,
+    motorRpm: { ...output.motorRpm },
+  }
 }
 
 export function App() {
@@ -56,7 +81,9 @@ export function App() {
   const [diagnostics, setDiagnostics] = useState(INITIAL_DIAGNOSTICS)
   const [paused, setPaused] = useState(false)
   const [resetToken, setResetToken] = useState(0)
-  const [sceneMode, setSceneMode] = useState<SceneMode>('nine')
+  const [sceneMode, setSceneMode] = useState<SceneMode>('all')
+  const [localMotors, setLocalMotors] = useState<UnitMotor[]>(() => fitMotors([], DEFAULT_SETTINGS.unitCount))
+  const [localMoonCorrection, setLocalMoonCorrection] = useState(true)
   const [selectedUnit, setSelectedUnit] = useState(0)
   const [showStructure, setShowStructure] = useState(true)
   const [controlMode, setControlMode] = useState<'simulation' | 'backend'>('simulation')
@@ -89,8 +116,8 @@ export function App() {
   const selectedStep = sequenceSteps.find((step) => step.id === selectedStepId) ?? sequenceSteps[0]
   const effectPreset = inSequence ? selectedStep.preset : effectPresets[effectId]
   const sequenceSchedule = useMemo(
-    () => compileSequence(sequenceSteps, settings.controllerFps, sceneMode === 'nine' ? 9 : 1, sequenceEnding),
-    [sequenceSteps, settings.controllerFps, sceneMode, sequenceEnding],
+    () => compileSequence(sequenceSteps, settings.controllerFps, sceneMode === 'all' ? settings.unitCount : 1, sequenceEnding),
+    [sequenceSteps, settings.controllerFps, settings.unitCount, sceneMode, sequenceEnding],
   )
   const currentSequenceFrame = resolveSequenceFrame(sequenceSchedule, diagnostics.globalFrame)!
 
@@ -100,9 +127,9 @@ export function App() {
   const liveMode = playback.state?.active ? playback.state.mode : sequencePlaybackMode
   const backendSchedule = useMemo(
     () => savedDocument === null ? null : compileSequence(
-      savedDocument.steps, settings.controllerFps, backendState?.output.unitCount ?? 9, savedDocument.ending ?? { kind: 'hold' },
+      savedDocument.steps, settings.controllerFps, backendState?.output.unitCount ?? settings.unitCount, savedDocument.ending ?? { kind: 'hold' },
     ),
-    [savedDocument, settings.controllerFps, backendState?.output.unitCount],
+    [savedDocument, settings.controllerFps, backendState?.output.unitCount, settings.unitCount],
   )
   const viewSequence = inBackend
     ? liveMode === 'sequence' ? backendSchedule : null
@@ -115,6 +142,16 @@ export function App() {
   ), [])
   const following = inBackend && liveBackendFrame(playback.state, 0) !== null
   const unitTestColors = inBackend && playback.state?.active ? playback.state.unitColors ?? null : null
+  // 後端控制時照後端的馬達狀態轉：播放中用 /api/playback（其他畫面下的命令也看得到），否則用最近一次狀態。
+  // In backend mode spin as the backend says: /api/playback while playing (sees commands from other pages), else the last state.
+  const backendMotors = playback.state?.active && playback.state.motor
+    ? playback.state.motor
+    : backendState?.motor.units.map(({ speed, direction }) => ({ speed, direction })) ?? null
+  const motors: UnitMotor[] = inBackend
+    ? Array.from({ length: settings.unitCount }, (_, index) => backendMotors?.[index] ?? STOPPED_MOTOR)
+    : localMotors
+  const moonCorrection = inBackend ? backendState?.hardware.moonCorrection ?? true : localMoonCorrection
+  const viewMotors = sceneMode === 'single' ? [motors[selectedUnit] ?? LOCAL_MOTOR] : motors
   const displayedPreset = viewSequence
     ? resolveSequenceFrame(viewSequence, diagnostics.globalFrame)!.layers.at(-1)!.preset
     : viewPreset
@@ -203,10 +240,10 @@ export function App() {
       setSequencePlaybackMode(data.playbackMode)
       const loadedEnding = data.sequence.ending ?? { kind: 'hold' }
       setSavedSequence(JSON.stringify({ ...data.sequence, ending: loadedEnding }))
-      setSettings((current) => ({ ...current, controllerFps: data.output.fps, rpm: data.output.rpm }))
-      if (data.output.unitCount === 1 || data.output.unitCount === 9) {
-        setSceneMode(data.output.unitCount === 1 ? 'single' : 'nine')
-      }
+      setSettings((current) => withBackendOutput(current, data.output))
+      setLocalMotors((current) => fitMotors(current, data.output.unitCount))
+      setSelectedUnit((current) => Math.min(current, data.output.unitCount - 1))
+      if (data.output.unitCount === 1) setSceneMode('single')
       if (!sequenceEdited.current || (savedSequence !== null && JSON.stringify(sequenceDocument) === savedSequence)) {
         setSequenceEnabled(true)
         setSequenceEnding(loadedEnding)
@@ -266,7 +303,9 @@ export function App() {
       setBackendState(state)
       setEffectPresets((current) => ({ ...current, [state.preset.effectId]: state.preset }))
       setEffectId(state.preset.effectId)
-      setSettings((current) => ({ ...current, controllerFps: state.output.fps, rpm: state.output.rpm }))
+      setSettings((current) => withBackendOutput(current, state.output))
+      setLocalMotors((current) => fitMotors(current, state.output.unitCount))
+      setSelectedUnit((current) => Math.min(current, state.output.unitCount - 1))
     }).catch((error: unknown) => {
       if (request === backendRequest.current) {
         setBackendError(error instanceof Error ? error.message : '無法連線後端')
@@ -298,22 +337,36 @@ export function App() {
     }
   }, [backendBusy, backendState, controlMode])
 
-  const setMotor = useCallback(async (enabled: boolean) => {
-    if (controlMode !== 'backend' || backendBusy || backendState === null) return
+  // 模擬模式改本地狀態；後端控制時送出命令。 / Local state in simulation mode; a backend command in backend mode.
+  const sendHardware = useCallback(async (send: () => Promise<BackendState>, failure: string) => {
+    if (backendBusy || backendState === null) return
     const request = backendRequest.current
     setBackendBusy(true)
     setBackendError(null)
     try {
-      const state = await setBackendMotor(enabled)
-      if (request === backendRequest.current) setBackendState(state)
+      const state = await send()
+      if (request === backendRequest.current) {
+        setBackendState(state)
+        setPlaybackPoll((current) => current + 1)
+      }
     } catch (error) {
       if (request === backendRequest.current) {
-        setBackendError(error instanceof Error ? error.message : '馬達命令送出失敗')
+        setBackendError(error instanceof Error ? error.message : failure)
       }
     } finally {
       if (request === backendRequest.current) setBackendBusy(false)
     }
-  }, [backendBusy, backendState, controlMode])
+  }, [backendBusy, backendState])
+
+  const setMotor = useCallback((command: MotorCommand) => {
+    if (controlMode === 'backend') void sendHardware(() => setBackendMotor(command), '馬達命令送出失敗')
+    else setLocalMotors((current) => applyMotorCommand(current, command))
+  }, [controlMode, sendHardware])
+
+  const setMoonCorrection = useCallback((enabled: boolean) => {
+    if (controlMode === 'backend') void sendHardware(() => setBackendMoonCorrection(enabled), '月亮校正設定失敗')
+    else setLocalMoonCorrection(enabled)
+  }, [controlMode, sendHardware])
 
   const restartBackend = useCallback(async (source: 'sequence' | 'single') => {
     if (controlMode !== 'backend' || backendBusy || backendState === null) return
@@ -336,17 +389,18 @@ export function App() {
   }, [backendBusy, backendState, controlMode])
 
   const updateSetting = useCallback(
-    (name: Exclude<keyof SimulationSettings, 'ledCount'>, value: number) => {
+    (name: Exclude<keyof SimulationSettings, 'ledCount' | 'unitCount' | 'motorRpm'>, value: number) => {
       setSettings((current) => ({ ...current, [name]: value }))
     },
     [],
   )
+  const updateMotorRpm = useCallback((level: keyof MotorRpm, value: number) => {
+    setSettings((current) => ({ ...current, motorRpm: { ...current.motorRpm, [level]: value } }))
+  }, [])
 
-  const degreesPerFrame = useMemo(
-    () => degreesPerControllerFrame(settings.rpm, settings.controllerFps),
-    [settings.rpm, settings.controllerFps],
-  )
-  const exposureArc = (settings.rpm * 6 * settings.exposureMs) / 1000
+  const selectedRpm = Math.abs(diagnostics.rpm)
+  const degreesPerFrame = degreesPerControllerFrame(selectedRpm, settings.controllerFps)
+  const exposureArc = (selectedRpm * 6 * settings.exposureMs) / 1000
   const activeEffect = getEffectManifest(displayedPreset.effectId)
 
   const selectEffect = useCallback((nextEffectId: EffectId) => {
@@ -500,12 +554,12 @@ export function App() {
             <div className="segmented-control" aria-label="Scene layout">
               <button type="button" className={sceneMode === 'single' ? 'active' : 'secondary'}
                 aria-pressed={sceneMode === 'single'} onClick={() => changeSceneMode('single')}>單組</button>
-              <button type="button" className={sceneMode === 'nine' ? 'active' : 'secondary'}
-                aria-pressed={sceneMode === 'nine'} onClick={() => changeSceneMode('nine')}>1×9</button>
+              <button type="button" className={sceneMode === 'all' ? 'active' : 'secondary'}
+                aria-pressed={sceneMode === 'all'} onClick={() => changeSceneMode('all')}>全部</button>
             </div>
-            {sceneMode === 'nine' && (
+            {sceneMode === 'all' && (
               <div className="unit-picker" aria-label="Selected unit">
-                {Array.from({ length: 9 }, (_, index) => (
+                {Array.from({ length: settings.unitCount }, (_, index) => (
                   <button type="button" key={index}
                     className={selectedUnit === index ? 'active' : 'secondary'}
                     aria-pressed={selectedUnit === index}
@@ -536,10 +590,12 @@ export function App() {
               onSelectUnit={setSelectedUnit}
               onDiagnostics={setDiagnostics}
               unitColors={unitTestColors}
+              motors={viewMotors}
+              moonCorrection={moonCorrection}
             />
             <p className="viewport-caption">
               <strong>{activeEffect.label}</strong>
-              <span>{settings.controllerFps} FPS · {settings.rpm} RPM</span>
+              <span>{settings.controllerFps} FPS · {sceneMode === 'all' ? `第 ${selectedUnit + 1} 台 ` : ''}{diagnostics.rpm === 0 ? '停止' : `${selectedRpm} RPM ${diagnostics.rpm > 0 ? '順' : '逆'}`}</span>
               {inBackend && (
                 <span>{following
                   ? `後端輸出 · ${liveMode === 'sequence' ? '串接' : '單一效果'}`
@@ -603,7 +659,11 @@ export function App() {
           onSequenceTransition={updateTransition}
           onRefreshBackend={() => setBackendRefresh((current) => current + 1)}
           onApplyBackend={() => { void applyToBackend(effectPreset) }}
-          onMotor={(enabled) => { void setMotor(enabled) }}
+          motors={motors}
+          moonCorrection={moonCorrection}
+          onMotor={setMotor}
+          onMoonCorrection={setMoonCorrection}
+          onMotorRpm={updateMotorRpm}
           onRestartBackend={(source) => { void restartBackend(source) }}
           onUnitColorTest={() => setPlaybackPoll((current) => current + 1)}
           onSetting={updateSetting}

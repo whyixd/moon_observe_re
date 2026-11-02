@@ -224,7 +224,7 @@ class SequenceTests(unittest.TestCase):
                     with urlopen(url + "/api/sequence") as response:
                         initial = json.load(response)
                         self.assertEqual(1, len(initial["sequence"]["steps"]))
-                        self.assertEqual({"fps": 40, "rpm": 360, "unitCount": 9}, initial["output"])
+                        self.assertEqual({"fps": 40, "pixels": 156, "unitCount": 9, "motorRpm": {"mid": 130, "max": 500}}, initial["output"])
                     saved = Request(url + "/api/sequence", json.dumps(document()).encode(),
                                     {"Content-Type": "application/json"}, method="PUT")
                     with urlopen(saved) as response:

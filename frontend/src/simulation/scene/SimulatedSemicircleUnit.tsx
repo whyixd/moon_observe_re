@@ -4,13 +4,13 @@ import {
   ARC_CLEARANCE,
   ARC_RADIUS,
   buildSemicircleLedPositions,
-  LEDS_PER_ARC,
   semicirclePoint,
   type SemicirclePlane,
 } from '../../preview3d/geometry'
 import type { SceneMode, UnitLayout } from '../model'
 
-const LED_SPACING = Math.PI * ARC_RADIUS / (LEDS_PER_ARC - 1)
+// 尺寸依 152 顆的間距固定，燈數改變時外觀大小不變。 / Sized from the 152-LED spacing so the look does not change with the LED count.
+const LED_SPACING = Math.PI * ARC_RADIUS / (152 - 1)
 const TUBE_RADIUS = LED_SPACING * 0.22
 const HOUSING_RADIUS = LED_SPACING * 0.44
 const LIGHT_RADIUS = LED_SPACING * 0.32
@@ -35,17 +35,21 @@ class SemicircleCurve extends THREE.Curve<THREE.Vector3> {
   }
 }
 
-const LED_LAYOUT = [
-  ...buildSemicircleLedPositions(
-    ARC_RADIUS, LEDS_PER_ARC, 'xy', -ARC_CLEARANCE,
-  ).map((position) => ({ position, arc: 0 })),
-  ...buildSemicircleLedPositions(
-    ARC_RADIUS, LEDS_PER_ARC, 'zy', ARC_CLEARANCE,
-  ).map((position) => ({ position, arc: 1 })),
-]
+function buildLedLayout(ledCount: number) {
+  return [
+    ...buildSemicircleLedPositions(
+      ARC_RADIUS, ledCount, 'xy', -ARC_CLEARANCE,
+    ).map((position) => ({ position, arc: 0 })),
+    ...buildSemicircleLedPositions(
+      ARC_RADIUS, ledCount, 'zy', ARC_CLEARANCE,
+    ).map((position) => ({ position, arc: 1 })),
+  ]
+}
 
 type SimulatedSemicircleUnitProps = {
   unit: UnitLayout
+  /** 每條半圓的燈數；改變時請用 key 重新掛載。 / LEDs per arc; remount (key) when it changes. */
+  ledCount: number
   sceneMode: SceneMode
   selected: boolean
   showStructure: boolean
@@ -57,6 +61,7 @@ type SimulatedSemicircleUnitProps = {
 
 export function SimulatedSemicircleUnit({
   unit,
+  ledCount,
   sceneMode,
   selected,
   showStructure,
@@ -65,6 +70,7 @@ export function SimulatedSemicircleUnit({
   onLights,
   onGlow,
 }: SimulatedSemicircleUnitProps) {
+  const ledLayout = useMemo(() => buildLedLayout(ledCount), [ledCount])
   const housingRef = useRef<THREE.InstancedMesh | null>(null)
   const lightRef = useRef<THREE.InstancedMesh | null>(null)
   const glowRef = useRef<THREE.InstancedMesh | null>(null)
@@ -83,7 +89,7 @@ export function SimulatedSemicircleUnit({
     const black = new THREE.Color(0, 0, 0)
     const lightOffset = HOUSING_RADIUS * 0.65
 
-    LED_LAYOUT.forEach(({ position, arc }, index) => {
+    ledLayout.forEach(({ position, arc }, index) => {
       matrix.makeTranslation(position[0], position[1], position[2])
       housingRef.current?.setMatrixAt(index, matrix)
 
@@ -103,13 +109,13 @@ export function SimulatedSemicircleUnit({
     glowRef.current.instanceMatrix.needsUpdate = true
     if (lightRef.current.instanceColor) lightRef.current.instanceColor.needsUpdate = true
     if (glowRef.current.instanceColor) glowRef.current.instanceColor.needsUpdate = true
-  }, [showStructure])
+  }, [showStructure, ledLayout])
 
-  const count = LED_LAYOUT.length
+  const count = ledLayout.length
 
   return (
     <group
-      position={[unit.x, unit.y, 0]}
+      position={[unit.x, unit.y, unit.z]}
       rotation-y={unit.yawRadians}
       onClick={(event) => {
         event.stopPropagation()
@@ -118,10 +124,10 @@ export function SimulatedSemicircleUnit({
     >
       {selected && showStructure && (
         <mesh
-          position={[0, ARC_RADIUS * unit.scale + (sceneMode === 'nine' ? 0.13 : 0.38), 0]}
+          position={[0, ARC_RADIUS * unit.scale + (sceneMode === 'all' ? 0.13 : 0.38), 0]}
           rotation-z={Math.PI}
         >
-          <coneGeometry args={sceneMode === 'nine' ? [0.06, 0.12, 3] : [0.16, 0.32, 3]} />
+          <coneGeometry args={sceneMode === 'all' ? [0.06, 0.12, 3] : [0.16, 0.32, 3]} />
           <meshBasicMaterial color="#65d9f8" side={THREE.DoubleSide} />
         </mesh>
       )}
@@ -129,11 +135,11 @@ export function SimulatedSemicircleUnit({
         {showStructure && (
           <>
             <mesh castShadow>
-              <tubeGeometry args={[firstCurve, 192, TUBE_RADIUS * (sceneMode === 'nine' ? 3 : 1), 8, false]} />
+              <tubeGeometry args={[firstCurve, 192, TUBE_RADIUS * (sceneMode === 'all' ? 3 : 1), 8, false]} />
               <meshStandardMaterial color="#8da3b8" metalness={0.58} roughness={0.32} />
             </mesh>
             <mesh castShadow>
-              <tubeGeometry args={[secondCurve, 192, TUBE_RADIUS * (sceneMode === 'nine' ? 3 : 1), 8, false]} />
+              <tubeGeometry args={[secondCurve, 192, TUBE_RADIUS * (sceneMode === 'all' ? 3 : 1), 8, false]} />
               <meshStandardMaterial color="#72879a" metalness={0.58} roughness={0.35} />
             </mesh>
             <instancedMesh ref={housingRef} args={[undefined, undefined, count]}>

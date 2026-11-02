@@ -161,6 +161,15 @@ rpm = { mid = 130, max = 500 }   # max 為使用者提供；mid 依 60/230 比�
 - 後端函式的 `led_count`／`pixels` 參數預設值仍是 156，實際執行時一律由 config 傳入，沒有影響。
 - `generateBackendVectors.ts` 加產生一份 152 顆的測試資料，前後端都要比對。
 
+實作時定下的細節（M6）：
+- 燈數、台數、mid／max rpm 都從後端讀取（`/api/sequence` 與 `/api/state` 的 `output` 有 `pixels`、`unitCount`、`motorRpm`），離線預設 152 顆 × 5 台、130／500 rpm。`config["rpm"]` 與 API 的 `output.rpm` 已移除。
+- 「全部」視角的排列是 LongN `calcMotorPosition` 推廣到 N 台：Processing（X 右、Y 朝觀眾、Z 上，初始相機 `rotateX(PI/2)`）換成 three.js（x、y 上、z 朝觀眾），各台頂點方向 = `rotateZ(Angle)`，比例照 LongN 的 LED_RADIUS 35 對 X 間距 297.5。5 台的頂點依序朝左、左後、右後、右前、正前，看起來是一組月相。**需要現場確認**。
+- 每台照自己的 speed／direction 轉，改變轉速時角度連續（`RotorSegment`）。模擬模式預設全速順轉、可在「物理」分頁逐台調整；後端控制時照 `/api/playback` 的 `motor`（沒有在播放時用 `/api/state`）。
+- `world-upper-half` 的相位估計改用輸出影格起點的轉角加上未知相位，和後端 M5 每台累加的做法一致。
+- 月亮校正在模擬器也套用（`src/hardware.ts`，數值與後端相同、有測試），只在該台全速且開關打開時生效；亮度 40% 不模擬。
+- 馬達面板（`MotorPanel`）：「全部」一列加每台一列〔停｜中速｜全速〕〔順｜逆〕，後端模式顯示實際送出的 DMX 值與 channel，另有月亮校正開關。
+- M7 要注意：在背景（非互動 shell）啟動時 SIGINT 會被忽略，Python 收不到 Ctrl+C、結束時不會送全 0；Windows 服務停止時送的 Ctrl+C 也可能因 process group 收不到，部署時要實測，必要時在 `run.py` 加 SIGBREAK／SIGTERM 處理。
+
 ## 5. Windows 部署（取代 Pi 的 systemd）
 
 沿用「版本化、不可變 release」的原則，只是換成 Windows 的機制：
@@ -210,7 +219,7 @@ Windows 10 相容性：
 | M3 ✅ | `motor.py` + `/api/motor` + `/api/hardware` | API 測試：422/415/413 規則、只存在記憶體、重啟後一律 stop（2026-11-02：新增 `test_motor.py` 14 個測試，backend 共 116 個測試通過；實際啟動 `--api-only` 用 curl 測過 state／motor／hardware） |
 | M4 ✅ | effects 改為 152 顆 + 重新產生測試資料 | 所有效果在 152 / 156 顆下前後端都一致（2026-11-02：見下方 M4 細節；前端 118、backend 124 個測試通過） |
 | M5 ✅ | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0（2026-11-03：`test_send.py` 用真的 StupidArtnet 對本機 listener 收到 5 格 × 2 universe = 10 包，接著每個 universe 兩包全 0；另外實際啟動 `run.py`，用 API 切換馬達與月亮校正、Ctrl+C 結束，封包內容都正確；backend 共 127 個測試通過） |
-| M6 | 前端 | `npm test`、`tsc` 通過；用 Playwright 截圖確認 5 台的畫面和馬達 UI |
+| M6 ✅ | 前端 | `npm test`、`tsc` 通過；用 Playwright 截圖確認 5 台的畫面和馬達 UI（2026-11-03：前端 124、backend 127 個測試通過；用 Playwright 控制本機 Chrome 實際操作模擬模式與後端控制模式，馬達、月亮校正、相機取景都確認過） |
 | M7 | Windows 部署腳本 | 在 Windows 機器上完成：安裝 → 升級 → 回退 → 停止時馬達確實停下 |
 | M8 | 文件 | 改寫 `system-reference.md`、backend 與 deploy 的 README |
 

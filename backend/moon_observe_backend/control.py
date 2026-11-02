@@ -57,8 +57,8 @@ class PresetStore:
             "revision": self.revision,
             "preset": self.raw,
             "output": {
-                "fps": config["fps"], "rpm": config["rpm"],
-                "pixels": config["pixels"], "unitCount": config["unit_count"],
+                "fps": config["fps"], "pixels": config["pixels"], "unitCount": config["unit_count"],
+                "motorRpm": dict(config["motor"]["rpm"]),
                 "sourceIp": config["source_ip"],
                 "targets": [{"unitId": target["unit_id"], "ip": target["ip"], "universes": list(target["universes"])}
                             for target in config["targets"]],
@@ -114,8 +114,8 @@ def make_server(
         def _sequence_state(self) -> dict[str, Any]:
             result = sequence_store.state()
             result["output"] = {
-                "fps": config["fps"], "rpm": config["rpm"],
-                "unitCount": config["unit_count"],
+                "fps": config["fps"], "pixels": config["pixels"], "unitCount": config["unit_count"],
+                "motorRpm": dict(config["motor"]["rpm"]),
             }
             return result
 

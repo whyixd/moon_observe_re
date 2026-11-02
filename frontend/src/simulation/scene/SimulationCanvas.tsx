@@ -7,6 +7,7 @@ import type { WeatherState } from '../../backendApi'
 import { ARC_RADIUS } from '../../preview3d/geometry'
 import { buildUnitLayouts, type SceneMode, type SimulationSettings } from '../model'
 import type { CompiledSequence } from '../sequence'
+import type { UnitMotor } from '../model'
 import { AxisGuide } from './AxisGuide'
 import { LightTrail, type Diagnostics } from './LightTrail'
 
@@ -29,9 +30,11 @@ type SimulationCanvasProps = {
   startFrame?: number
   /** Backend unit colour test: one color or null per unit. */
   unitColors?: (import('../../effects').RgbColor | null)[] | null
+  motors: UnitMotor[]
+  moonCorrection: boolean
 }
 
-function CameraFraming({ sceneMode }: Pick<SimulationCanvasProps, 'sceneMode'>) {
+function CameraFraming({ sceneMode, unitCount }: { sceneMode: SceneMode; unitCount: number }) {
   const { camera, gl, size } = useThree()
   const controls = useMemo(
     () => new ThreeOrbitControls(camera, gl.domElement),
@@ -48,13 +51,24 @@ function CameraFraming({ sceneMode }: Pick<SimulationCanvasProps, 'sceneMode'>) 
 
   useEffect(() => {
     if (!(camera instanceof THREE.PerspectiveCamera)) return
-    if (sceneMode === 'nine') {
+    if (sceneMode === 'all') {
+      // 依各台的範圍取景，從正前方略高處看。 / Frame every unit, seen from slightly above the front.
+      const units = buildUnitLayouts('all', unitCount, 0, 0)
+      const reach = (unit: (typeof units)[number]) => ARC_RADIUS * unit.scale
+      const minX = Math.min(...units.map((unit) => unit.x - reach(unit)))
+      const maxX = Math.max(...units.map((unit) => unit.x + reach(unit)))
+      const minY = Math.min(...units.map((unit) => unit.y - reach(unit)))
+      const maxY = Math.max(...units.map((unit) => unit.y + reach(unit)))
+      const centerZ = units.reduce((sum, unit) => sum + unit.z, 0) / units.length
       const aspect = Math.max(size.width / Math.max(size.height, 1), 0.1)
-      const verticalFov = THREE.MathUtils.degToRad(camera.fov)
-      const rowDistance = 12.32 / (Math.tan(verticalFov / 2) * aspect)
-      const distance = Math.max(9, rowDistance * 1.12)
-      camera.position.set(0, distance * 0.28, distance)
-      controls.target.set(0, 2.4, 0)
+      const verticalTan = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
+      const distance = Math.max(
+        6,
+        1.2 * Math.max((maxX - minX) / (2 * verticalTan * aspect), (maxY - minY) / (2 * verticalTan)),
+      )
+      const centerY = (minY + maxY) / 2
+      camera.position.set((minX + maxX) / 2, centerY + distance * 0.28, centerZ + distance)
+      controls.target.set((minX + maxX) / 2, centerY, centerZ)
     } else {
       const aspect = Math.max(size.width / Math.max(size.height, 1), 0.1)
       const distanceScale = Math.max(1, 0.9 / aspect)
@@ -66,7 +80,7 @@ function CameraFraming({ sceneMode }: Pick<SimulationCanvasProps, 'sceneMode'>) 
       controls.target.set(0, 1.05, 0)
     }
     controls.update()
-  }, [camera, controls, sceneMode, size.height, size.width])
+  }, [camera, controls, sceneMode, unitCount, size.height, size.width])
 
   useFrame(() => controls.update())
   return null
@@ -74,10 +88,10 @@ function CameraFraming({ sceneMode }: Pick<SimulationCanvasProps, 'sceneMode'>) 
 
 export function SimulationCanvas(props: SimulationCanvasProps) {
   const floorY = Math.min(
-    ...buildUnitLayouts(props.sceneMode, 0, 0).map(
+    ...buildUnitLayouts(props.sceneMode, props.settings.unitCount, 0, 0).map(
       (unit) => unit.y - ARC_RADIUS * unit.scale,
     ),
-  ) - (props.sceneMode === 'nine' ? 0.1 : 0.25)
+  ) - (props.sceneMode === 'all' ? 0.1 : 0.25)
 
   return (
     <Canvas
@@ -96,7 +110,7 @@ export function SimulationCanvas(props: SimulationCanvasProps) {
         gl.outputColorSpace = THREE.SRGBColorSpace
       }}
     >
-      <CameraFraming sceneMode={props.sceneMode} />
+      <CameraFraming sceneMode={props.sceneMode} unitCount={props.settings.unitCount} />
       <fog attach="fog" args={['#05070b', 40, 100]} />
       <hemisphereLight args={['#b9d8ff', '#17120e', 1.25]} />
       <directionalLight

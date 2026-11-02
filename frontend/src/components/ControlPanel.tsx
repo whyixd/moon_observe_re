@@ -14,7 +14,7 @@ import {
   type UnitVariation,
   type UnitVariationDistribution,
 } from '../effects'
-import type { BackendPlayback, BackendState, WeatherState } from '../backendApi'
+import type { BackendPlayback, BackendState, MotorCommand, WeatherState } from '../backendApi'
 import type { CompiledSequence, PlaybackRule, SequenceDocument, SequenceEnding, SequenceFrame, SequenceStep, TransitionKind } from '../simulation/sequence'
 import { ColorInput, GradientEditor } from './GradientEditor'
 import { PlaybackProgress } from './PlaybackProgress'
@@ -22,9 +22,10 @@ import { SavedSequenceView } from './SavedSequenceView'
 import { SequenceEditor } from './SequenceEditor'
 import { UnitColorTestPanel } from './UnitColorTestPanel'
 import { CATEGORY_LABELS, WeatherPanel } from './WeatherPanel'
-import type { SceneMode, SimulationSettings } from '../simulation/model'
+import type { MotorRpm, SceneMode, SimulationSettings, UnitMotor } from '../simulation/model'
+import { MotorPanel } from './MotorPanel'
 
-type NumericSetting = Exclude<keyof SimulationSettings, 'ledCount'>
+type NumericSetting = Exclude<keyof SimulationSettings, 'ledCount' | 'unitCount' | 'motorRpm'>
 type ControlTab = 'effect' | 'color' | 'sequence' | 'backend' | 'weather' | 'physics'
 
 type ControlPanelProps = {
@@ -72,7 +73,11 @@ type ControlPanelProps = {
   onSequenceTransition: (kind: TransitionKind, seconds: number) => void
   onRefreshBackend: () => void
   onApplyBackend: () => void
-  onMotor: (enabled: boolean) => void
+  motors: UnitMotor[]
+  moonCorrection: boolean
+  onMotor: (command: MotorCommand) => void
+  onMoonCorrection: (enabled: boolean) => void
+  onMotorRpm: (level: keyof MotorRpm, value: number) => void
   onRestartBackend: (source: 'sequence' | 'single') => void
   onUnitColorTest: () => void
   onSetting: (name: NumericSetting, value: number) => void
@@ -128,15 +133,15 @@ const DISTRIBUTIONS: ReadonlyArray<[UnitVariationDistribution, string]> = [
   ['skip', '跳著排'],
   ['random', '隨機'],
 ]
-const VARIATION_UNIT_COUNT = 9
-
 function UnitVariationEditor({
   effectPreset,
   ledCount,
+  unitCount,
   onChange,
 }: {
   effectPreset: EffectPreset
   ledCount: number
+  unitCount: number
   onChange: (variation: UnitVariation | null) => void
 }) {
   const parameters = getVariableParameters(effectPreset.effectId)
@@ -156,8 +161,8 @@ function UnitVariationEditor({
     return { parameter: parameter.key, from: current, to: Number(to.toFixed(6)), distribution: variation?.distribution ?? 'linear' }
   }
   const values = variation
-    ? Array.from({ length: VARIATION_UNIT_COUNT }, (_, index) => (
-      presetForUnit(effectPreset, index, VARIATION_UNIT_COUNT).parameters[definition.key]
+    ? Array.from({ length: unitCount }, (_, index) => (
+      presetForUnit(effectPreset, index, unitCount).parameters[definition.key]
     ))
     : []
 
@@ -193,7 +198,7 @@ function UnitVariationEditor({
           <Slider label="結束值" value={variation.to} min={definition.min} max={maxOf(definition.key)}
             step={definition.step} unit={definition.unit}
             onChange={(to) => onChange({ ...variation, to })} />
-          <p className="control-note">第 1–9 台：{values.map((value) => value.toLocaleString()).join('、')}</p>
+          <p className="control-note">第 1–{unitCount} 台：{values.map((value) => value.toLocaleString()).join('、')}</p>
         </>
       )}
     </div>
@@ -326,7 +331,11 @@ export function ControlPanel({
   onSequenceTransition,
   onRefreshBackend,
   onApplyBackend,
+  motors,
+  moonCorrection,
   onMotor,
+  onMoonCorrection,
+  onMotorRpm,
   onRestartBackend,
   onUnitColorTest,
   onSetting,
@@ -494,7 +503,7 @@ export function ControlPanel({
               </p>
             )}
 
-            <UnitVariationEditor effectPreset={effectPreset} ledCount={settings.ledCount} onChange={onUnitVariation} />
+            <UnitVariationEditor effectPreset={effectPreset} ledCount={settings.ledCount} unitCount={settings.unitCount} onChange={onUnitVariation} />
 
             <p className="effect-description">{activeEffect.description}</p>
           </>
@@ -563,7 +572,7 @@ export function ControlPanel({
             currentStepIndex={currentSequenceFrame.stepIndex}
             complete={currentSequenceFrame.complete}
             fps={settings.controllerFps}
-            unitCount={sceneMode === 'nine' ? 9 : 1}
+            unitCount={sceneMode === 'all' ? settings.unitCount : 1}
             onEnabled={onSequenceEnabled}
             onSelect={onSequenceSelect}
             onPlayFrom={onSequencePlayFrom}
@@ -580,7 +589,7 @@ export function ControlPanel({
           <SavedSequenceView
             document={savedSequence}
             fps={settings.controllerFps}
-            unitCount={sceneMode === 'nine' ? 9 : 1}
+            unitCount={sceneMode === 'all' ? settings.unitCount : 1}
             playingStepId={backendPlayingStepId}
             playbackMode={sequencePlaybackMode}
             busy={sequenceBusy}
@@ -600,7 +609,7 @@ export function ControlPanel({
           <div className="backend-connection">
             <p role="status">
               {backendBusy ? '連線／套用中…' : backendState
-                ? `已連線 · ${backendState.output.ip} · Universe ${backendState.output.universe} · 版本 ${backendState.revision}`
+                ? `已連線 · ${backendState.output.targets.length} 台控制器 · ${backendState.output.pixels} 顆 × ${backendState.output.unitCount} 台 · 版本 ${backendState.revision}`
                 : '尚未連線'}
             </p>
             {backendError && <p className="backend-error" role="alert">{backendError}</p>}
@@ -626,17 +635,11 @@ export function ControlPanel({
                 重播後端已儲存的串接或已套用的效果；畫面上尚未儲存、套用的變更不會送出。
               </p>
             </div>
-            <div className="motor-controls">
-              <span className="control-label">馬達控制 · Art-Net Channel 469</span>
-              <p role="status">{backendState?.motor.enabled ? '開啟命令：255（緩啟動）' : '關閉命令：0（緩停）'}</p>
-              <div className="button-row">
-                <button type="button" className="secondary" onClick={() => onMotor(false)}
-                  disabled={backendBusy || backendState === null || !backendState.motor.enabled}>緩停關閉</button>
-                <button type="button" onClick={() => onMotor(true)}
-                  disabled={backendBusy || backendState === null || backendState.motor.enabled}>開啟緩啟動</button>
-              </div>
-              <p className="control-note">後端啟動預設為關閉。Channel 469 位於 156 顆 RGB 燈之後；斷線時是否停機需由接收端保障。</p>
-            </div>
+            {backendState && (
+              <MotorPanel mode="backend" motors={motors} moonCorrection={moonCorrection}
+                backendMotor={backendState.motor} disabled={backendBusy}
+                onMotor={onMotor} onMoonCorrection={onMoonCorrection} />
+            )}
             {backendState && <UnitColorTestPanel unitCount={backendState.output.unitCount} onChange={onUnitColorTest} />}
           </div>
         ) : (
@@ -647,14 +650,28 @@ export function ControlPanel({
 
         {shownTab === 'physics' && (
           <>
+            {controlMode === 'simulation' && (
+              <MotorPanel mode="simulation" motors={motors} moonCorrection={moonCorrection}
+                onMotor={onMotor} onMoonCorrection={onMoonCorrection} />
+            )}
             <Slider
-              label="Motor speed"
-              value={settings.rpm}
-              min={60}
-              max={600}
+              label="Mid speed"
+              value={settings.motorRpm.mid}
+              min={10}
+              max={1000}
               step={5}
               unit="RPM"
-              onChange={(value) => onSetting('rpm', value)}
+              onChange={(value) => onMotorRpm('mid', value)}
+              disabled={controlMode === 'backend'}
+            />
+            <Slider
+              label="Max speed"
+              value={settings.motorRpm.max}
+              min={10}
+              max={1000}
+              step={5}
+              unit="RPM"
+              onChange={(value) => onMotorRpm('max', value)}
               disabled={controlMode === 'backend'}
             />
             <Slider
@@ -695,7 +712,7 @@ export function ControlPanel({
               onChange={(value) => onSetting('temporalSamples', value)}
             />
 
-            {sceneMode === 'nine' && (
+            {sceneMode === 'all' && (
               <>
                 <Slider
                   label="Unit phase step"

@@ -207,6 +207,13 @@ h2 { font-size: 1rem; font-weight: 650; }
 .restart-controls, .motor-controls { margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #242c37; }
 .restart-controls .button-row { flex-wrap: wrap; }
 .restart-controls .control-note, .motor-controls .control-note { margin-top: 0.6rem; padding-top: 0; border-top: 0; }
+.motor-row { display: grid; grid-template-columns: 4.2rem minmax(0, 3fr) minmax(0, 2fr); gap: 0.45rem; align-items: center; margin-top: 0.5rem; }
+.motor-row-label { color: #aebdca; font-size: 0.78rem; }
+.motor-row-label small { display: block; color: #6f8193; font-size: 0.68rem; }
+.motor-row .motor-speeds { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.25rem; }
+.motor-row .motor-directions { gap: 0.25rem; }
+.motor-row button { padding-left: 0; padding-right: 0; }
+.motor-moon { margin-top: 0.8rem; }
 
 .scene-controls {
   margin-top: 1rem;
@@ -265,7 +272,8 @@ h2 { font-size: 1rem; font-weight: 650; }
 
 .unit-picker {
   display: grid;
-  grid-template-columns: repeat(9, 1.9rem);
+  grid-auto-flow: column;
+  grid-auto-columns: 1.9rem;
   gap: 0.2rem;
 }
 

@@ -204,8 +204,6 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
         "targets": targets,
         "weather": weather,
         "fps": fps,
-        # 相位估計與前端仍讀單一 rpm：先用全速的 rpm。 / Phase estimate and frontend read one rpm: use max speed's.
-        "rpm": motor["rpm"]["max"],
         "pixels": pixels,
         "hardware": hardware,
         "motor": motor,

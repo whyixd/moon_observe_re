@@ -12,44 +12,54 @@ import {
   type EffectPreset,
   type RgbColor,
 } from '../../effects'
+import { moonCorrectionGains } from '../../hardware'
 import {
   ARC_CLEARANCE,
   ARC_RADIUS,
   buildSemicircleLedPositions,
-  LEDS_PER_ARC,
 } from '../../preview3d/geometry'
 import {
-  angleAtTime,
   buildUnitLayouts,
   buildTemporalSamples,
   controllerFrameAtTime,
   normalizedAngle,
+  retimeRotor,
+  rotorAngle,
+  signedRpm,
   simulatedUnknownPhase,
   unitRelativeHeightAtPhase,
+  type RotorSegment,
   type SceneMode,
   type SimulationSettings,
+  type UnitMotor,
 } from '../model'
 import { layerUnitWeight, resolveSequenceFrame, type CompiledSequence, type SequenceFrame, type SequenceLayer } from '../sequence'
 import { frontFacingBrightness } from './facing'
 import { SimulatedSemicircleUnit } from './SimulatedSemicircleUnit'
 
-const ARC_POSITIONS = [
-  buildSemicircleLedPositions(ARC_RADIUS, LEDS_PER_ARC, 'xy', -ARC_CLEARANCE),
-  buildSemicircleLedPositions(ARC_RADIUS, LEDS_PER_ARC, 'zy', ARC_CLEARANCE),
-]
-const LED_POINTS = ARC_POSITIONS.flatMap((arc, arcIndex) =>
-  arc.map((position, ledIndex) => ({
+type LedPoint = {
+  position: readonly [number, number, number]
+  normal: readonly [number, number, number]
+  ledIndex: number
+  arcIndex: number
+}
+
+function buildLedPoints(ledCount: number): LedPoint[] {
+  const arcs = [
+    buildSemicircleLedPositions(ARC_RADIUS, ledCount, 'xy', -ARC_CLEARANCE),
+    buildSemicircleLedPositions(ARC_RADIUS, ledCount, 'zy', ARC_CLEARANCE),
+  ]
+  return arcs.flatMap((arc, arcIndex) => arc.map((position, ledIndex) => ({
     position,
     normal: arcIndex === 0
-      ? [position[0] / ARC_RADIUS, position[1] / ARC_RADIUS, 0]
-      : [0, position[1] / ARC_RADIUS, position[2] / ARC_RADIUS],
+      ? [position[0] / ARC_RADIUS, position[1] / ARC_RADIUS, 0] as const
+      : [0, position[1] / ARC_RADIUS, position[2] / ARC_RADIUS] as const,
     ledIndex,
     arcIndex,
-  })),
-)
-const TRAIL_POINTS = LED_POINTS.filter(
-  ({ ledIndex }) => ledIndex % 4 === 0 || ledIndex === LEDS_PER_ARC - 1,
-)
+  })))
+}
+
+const RUNNING: UnitMotor = { speed: 'max', direction: 'cw' }
 
 type Diagnostics = {
   angleDegrees: number
@@ -57,6 +67,8 @@ type Diagnostics = {
   globalFrame: number
   cyclePhase: number
   simulationTime: number
+  /** 選取那台目前的帶號轉速。 / The selected unit's current signed rpm. */
+  rpm: number
 }
 
 type LightTrailProps = {
@@ -77,6 +89,10 @@ type LightTrailProps = {
   startFrame?: number
   /** 後端單色測試：每台一色或 null（照常）。 / Backend unit colour test: one color or null per unit. */
   unitColors?: (RgbColor | null)[] | null
+  /** 每台的馬達狀態（依 unit index）；缺的視為全速順轉。 / Motor state per unit index; missing units run at max/cw. */
+  motors: UnitMotor[]
+  /** 全速時套用 LongN 月亮校正。 / Apply LongN moon correction at max speed. */
+  moonCorrection: boolean
 }
 
 function playbackAt(
@@ -147,6 +163,8 @@ export function LightTrail({
   syncFrame = null,
   startFrame = 0,
   unitColors = null,
+  motors,
+  moonCorrection,
 }: LightTrailProps) {
   const rotorRefs = useRef<Array<THREE.Group | null>>([])
   const lightRefs = useRef<Array<THREE.InstancedMesh | null>>([])
@@ -156,17 +174,26 @@ export function LightTrail({
   const color = useMemo(() => new THREE.Color(), [])
   const worldPosition = useMemo(() => new THREE.Vector3(), [])
   const worldNormal = useMemo(() => new THREE.Vector3(), [])
+  const ledCount = settings.ledCount
+  const ledPoints = useMemo(() => buildLedPoints(ledCount), [ledCount])
+  const trailPoints = useMemo(
+    () => ledPoints.filter(({ ledIndex }) => ledIndex % 4 === 0 || ledIndex === ledCount - 1),
+    [ledPoints, ledCount],
+  )
   const unitLayouts = useMemo(
     () => buildUnitLayouts(
       sceneMode,
+      settings.unitCount,
       settings.unitPhaseStepDegrees,
       weather?.category ? weather.frameStep : settings.unitFrameOffsetStep,
     ),
-    [sceneMode, settings.unitFrameOffsetStep, settings.unitPhaseStepDegrees, weather?.category, weather?.frameStep],
+    [sceneMode, settings.unitCount, settings.unitFrameOffsetStep, settings.unitPhaseStepDegrees, weather?.category, weather?.frameStep],
   )
+  // 每台一段等速轉動；改變轉速時從當下角度接續。 / One constant-speed stretch per unit, continued from the current angle on a speed change.
+  const rotors = useRef<RotorSegment[]>([])
 
   const pointCount =
-    TRAIL_POINTS.length * settings.temporalSamples * unitLayouts.length
+    trailPoints.length * settings.temporalSamples * unitLayouts.length
   const geometry = useMemo(() => {
     const nextGeometry = new THREE.BufferGeometry()
     nextGeometry.setAttribute(
@@ -177,7 +204,7 @@ export function LightTrail({
       'color',
       new THREE.BufferAttribute(new Float32Array(pointCount * 3), 3),
     )
-    nextGeometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 1, 0), 9)
+    nextGeometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 3, 0), 20)
     return nextGeometry
   }, [pointCount])
 
@@ -194,8 +221,8 @@ export function LightTrail({
   }, [weather?.color, weather?.category])
 
   const unknownPhases = useMemo(
-    () => Array.from({ length: 9 }, (_, index) => simulatedUnknownPhase(index, resetToken)),
-    [resetToken],
+    () => unitLayouts.map((unit) => simulatedUnknownPhase(unit.index, resetToken)),
+    [resetToken, unitLayouts],
   )
   useEffect(() => () => geometry.dispose(), [geometry])
   // 重設時從指定影格開始（預設 0）。 / A reset starts from the given frame (0 by default).
@@ -203,6 +230,10 @@ export function LightTrail({
     // 加一點點避免浮點誤差讓 floor 落到前一格。 / A hair over so flooring never lands on the previous frame.
     simulationTime.current = startFrame ? (startFrame + 1e-6) / settings.controllerFps : 0
   }, [resetToken, sequenceRevision])
+  // 重設或換排列時轉子回到各自的起始角。 / Rotors restart from their initial angles on reset or a layout change.
+  useEffect(() => {
+    rotors.current = unitLayouts.map((unit) => ({ time: 0, angle: unit.phaseOffsetRadians, rpm: 0 }))
+  }, [resetToken, unitLayouts])
 
   useFrame(({ camera }, delta) => {
     if (!paused) simulationTime.current += Math.min(delta, 0.1)
@@ -223,8 +254,27 @@ export function LightTrail({
     const positions = geometry.attributes.position.array as Float32Array
     const colors = geometry.attributes.color.array as Float32Array
     let cursor = 0
+    const fps = settings.controllerFps
+    // 後端的相位估計在每個輸出影格開始時取樣。 / The backend estimates phase at the start of each output frame.
+    const heldPhase = (rotor: RotorSegment, unknownPhase: number, globalFrame: number) => {
+      const angle = rotorAngle(rotor, globalFrame / fps) + unknownPhase
+      return { cosine: Math.cos(angle), sine: Math.sin(angle) }
+    }
 
     for (const unit of unitLayouts) {
+      const motor = motors[unit.index] ?? RUNNING
+      const rotor = retimeRotor(
+        rotors.current[unit.index] ?? { time: 0, angle: unit.phaseOffsetRadians, rpm: 0 },
+        now,
+        signedRpm(motor, settings.motorRpm),
+      )
+      rotors.current[unit.index] = rotor
+      const gains = moonCorrectionGains(ledCount, moonCorrection, motor.speed)
+      const corrected = (effectColor: RgbColor, ledIndex: number): RgbColor => {
+        if (gains === null) return effectColor
+        const gain = gains[ledIndex]
+        return { r: effectColor.r * gain, g: effectColor.g * gain, b: effectColor.b * gain }
+      }
       const raining = weather?.category === 'rain'
       const unitPreset = (layer: SequenceLayer) => presetForUnit(layer.preset, unit.index, unitLayouts.length)
       // 共用時間表的效果不套用各台錯開。 / Shared-schedule effects skip unit offsets.
@@ -241,31 +291,17 @@ export function LightTrail({
       const tiltSine = Math.sin(unit.tiltXRadians)
       const yawCosine = Math.cos(unit.yawRadians)
       const yawSine = Math.sin(unit.yawRadians)
-      const estimatedPhase = unit.phaseOffsetRadians + unknownPhases[unit.index]
+      const unknownPhase = unknownPhases[unit.index]
 
       for (const sample of samples) {
-        const angle = angleAtTime(
-          sample.timeSeconds,
-          settings.rpm,
-          unit.phaseOffsetRadians,
-        )
+        const angle = rotorAngle(rotor, sample.timeSeconds)
         const cosine = Math.cos(angle)
         const sine = Math.sin(angle)
-        const globalFrame = controllerFrameAtTime(
-          sample.timeSeconds,
-          settings.controllerFps,
-        )
+        const globalFrame = controllerFrameAtTime(sample.timeSeconds, fps)
         const playback = playbackAt(sequence, effectPreset, globalFrame)
-        const heldPhases = playback.layers.map((layer) => {
-          const heldAngle = angleAtTime(
-            layer.sourceFrame / settings.controllerFps,
-            settings.rpm,
-            estimatedPhase,
-          )
-          return { cosine: Math.cos(heldAngle), sine: Math.sin(heldAngle) }
-        })
+        const held = heldPhase(rotor, unknownPhase, globalFrame)
 
-        for (const { position, normal, ledIndex, arcIndex } of TRAIL_POINTS) {
+        for (const { position, normal, ledIndex, arcIndex } of trailPoints) {
           const [x, y, z] = position
           const rotatedX = cosine * x + sine * z
           const rotatedZ = -sine * x + cosine * z
@@ -276,7 +312,7 @@ export function LightTrail({
           positions[cursor + 1] = unit.y + unit.scale * (
             tiltCosine * y - tiltSine * rotatedZ
           )
-          positions[cursor + 2] = unit.scale * (
+          positions[cursor + 2] = unit.z + unit.scale * (
             -yawSine * rotatedX + yawCosine * tiltedZ
           )
 
@@ -304,25 +340,22 @@ export function LightTrail({
             continue
           }
 
-          const effectColor = testColor ?? playbackColor(playback, unit.index, unitLayouts.length, (layer, layerIndex) => sampleWeatherEffect(
+          const effectColor = corrected(testColor ?? playbackColor(playback, unit.index, unitLayouts.length, (layer) => sampleWeatherEffect(
             layer,
             createEffectContext(
               layerFrame(layer),
-              settings.controllerFps,
+              fps,
               ledIndex,
-              LEDS_PER_ARC,
+              ledCount,
               unit.index,
               unitLayouts.length,
               layer.localFrame,
               layer.preset.effectId === 'world-upper-half'
-                ? unitRelativeHeightAtPhase(
-                  position, heldPhases[layerIndex].cosine, heldPhases[layerIndex].sine,
-                  tiltCosine, tiltSine, unit.scale,
-                )
+                ? unitRelativeHeightAtPhase(position, held.cosine, held.sine, tiltCosine, tiltSine, unit.scale)
                 : positions[cursor + 1] - unit.y,
-              arcIndex === 0 ? -heldPhases[layerIndex].sine : heldPhases[layerIndex].cosine,
+              arcIndex === 0 ? -held.sine : held.cosine,
             ),
-          ))
+          )), ledIndex)
           color.setRGB(
             effectColor.r,
             effectColor.g,
@@ -337,53 +370,39 @@ export function LightTrail({
         }
       }
 
-      const rotor = rotorRefs.current[unit.index]
-      if (rotor) {
-        rotor.rotation.y = normalizedAngle(
-          angleAtTime(now, settings.rpm, unit.phaseOffsetRadians),
-        )
-      }
+      const rotorNode = rotorRefs.current[unit.index]
+      if (rotorNode) rotorNode.rotation.y = normalizedAngle(rotorAngle(rotor, now))
 
       const lights = lightRefs.current[unit.index]
       const glow = glowRefs.current[unit.index]
-      if (rotor && lights && glow) {
-        rotor.updateWorldMatrix(true, false)
-        const globalFrame = controllerFrameAtTime(now, settings.controllerFps)
+      if (rotorNode && lights && glow) {
+        rotorNode.updateWorldMatrix(true, false)
+        const globalFrame = controllerFrameAtTime(now, fps)
         const playback = playbackAt(sequence, effectPreset, globalFrame)
-        const heldPhases = playback.layers.map((layer) => {
-          const heldAngle = angleAtTime(
-            layer.sourceFrame / settings.controllerFps,
-            settings.rpm,
-            estimatedPhase,
-          )
-          return { cosine: Math.cos(heldAngle), sine: Math.sin(heldAngle) }
-        })
-        for (let ledIndex = 0; ledIndex < LEDS_PER_ARC; ledIndex += 1) {
-          for (let arcIndex = 0; arcIndex < ARC_POSITIONS.length; arcIndex += 1) {
-            const instanceIndex = arcIndex * LEDS_PER_ARC + ledIndex
-            const { position, normal } = LED_POINTS[instanceIndex]
-            worldPosition.set(...position).applyMatrix4(rotor.matrixWorld)
-            const effectColor = testColor ?? playbackColor(playback, unit.index, unitLayouts.length, (layer, layerIndex) => sampleWeatherEffect(
+        const held = heldPhase(rotor, unknownPhase, globalFrame)
+        for (let ledIndex = 0; ledIndex < ledCount; ledIndex += 1) {
+          for (let arcIndex = 0; arcIndex < 2; arcIndex += 1) {
+            const instanceIndex = arcIndex * ledCount + ledIndex
+            const { position, normal } = ledPoints[instanceIndex]
+            worldPosition.set(...position).applyMatrix4(rotorNode.matrixWorld)
+            const effectColor = corrected(testColor ?? playbackColor(playback, unit.index, unitLayouts.length, (layer) => sampleWeatherEffect(
               layer,
               createEffectContext(
                 layerFrame(layer),
-                settings.controllerFps,
+                fps,
                 ledIndex,
-                LEDS_PER_ARC,
+                ledCount,
                 unit.index,
                 unitLayouts.length,
                 layer.localFrame,
                 layer.preset.effectId === 'world-upper-half'
-                  ? unitRelativeHeightAtPhase(
-                    position, heldPhases[layerIndex].cosine, heldPhases[layerIndex].sine,
-                    tiltCosine, tiltSine, unit.scale,
-                  )
+                  ? unitRelativeHeightAtPhase(position, held.cosine, held.sine, tiltCosine, tiltSine, unit.scale)
                   : worldPosition.y - unit.y,
-                arcIndex === 0 ? -heldPhases[layerIndex].sine : heldPhases[layerIndex].cosine,
+                arcIndex === 0 ? -held.sine : held.cosine,
               ),
-            ))
+            )), ledIndex)
             worldNormal.set(normal[0], normal[1], normal[2])
-              .transformDirection(rotor.matrixWorld)
+              .transformDirection(rotorNode.matrixWorld)
             const facing = frontFacingBrightness(
               worldNormal.x,
               worldNormal.y,
@@ -419,22 +438,19 @@ export function LightTrail({
       const selectedLayout = unitLayouts.find(
         (unit) => unit.index === selectedUnit,
       ) ?? unitLayouts[0]
+      const selectedRotor = rotors.current[selectedLayout.index]
       const frame = controllerFrameAtTime(
         now,
-        settings.controllerFps,
-        selectedLayout.frameOffset / settings.controllerFps,
+        fps,
+        selectedLayout.frameOffset / fps,
       )
       onDiagnostics({
-        angleDegrees:
-          (normalizedAngle(angleAtTime(
-            now,
-            settings.rpm,
-            selectedLayout.phaseOffsetRadians,
-          )) * 180) / Math.PI,
+        angleDegrees: selectedRotor ? (normalizedAngle(rotorAngle(selectedRotor, now)) * 180) / Math.PI : 0,
         controllerFrame: frame,
-        globalFrame: controllerFrameAtTime(now, settings.controllerFps),
+        globalFrame: controllerFrameAtTime(now, fps),
         cyclePhase: frame % 20,
         simulationTime: now,
+        rpm: selectedRotor?.rpm ?? 0,
       })
       diagnosticAccumulator.current = 0
     }
@@ -449,15 +465,16 @@ export function LightTrail({
           opacity={0.45}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
-          size={sceneMode === 'nine' ? 1.6 : 2.2}
+          size={sceneMode === 'all' ? 1.6 : 2.2}
           sizeAttenuation={false}
           toneMapped={false}
         />
       </points>
       {unitLayouts.map((unit) => (
         <SimulatedSemicircleUnit
-          key={unit.index}
+          key={`${unit.index}-${ledCount}`}
           unit={unit}
+          ledCount={ledCount}
           sceneMode={sceneMode}
           selected={unit.index === selectedUnit}
           showStructure={showStructure}

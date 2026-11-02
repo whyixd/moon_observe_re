@@ -1,17 +1,48 @@
 import type { EffectPreset, RgbColor } from './effects'
+import type { MotorDirection, MotorRpm, MotorSpeed, UnitMotor } from './simulation/model'
 import type { SequenceDocument } from './simulation/sequence'
+
+export type BackendMotorUnit = UnitMotor & {
+  unitId: number
+  /** 實際送出的 DMX 值。 / DMX values actually sent. */
+  value: number
+  directionValue: number
+  rpm: number
+}
+
+export type BackendMotorState = {
+  revision: number
+  channels: { speed: number; direction: number }
+  levels: {
+    speeds: Record<MotorSpeed, number>
+    directions: Record<MotorDirection, number>
+    rpm: MotorRpm
+  }
+  units: BackendMotorUnit[]
+}
+
+export type BackendHardwareState = {
+  colorOrder: string
+  brightness: number
+  moonCorrection: boolean
+  moonCorrectionDefault: boolean
+  pixels: number
+}
+
+export type BackendTarget = { unitId: number; ip: string; universes: number[] }
 
 export type BackendState = {
   revision: number
   preset: EffectPreset
-  motor: { channel: number; enabled: boolean; value: number }
+  motor: BackendMotorState
+  hardware: BackendHardwareState
   output: {
-    ip: string
-    universe: number
     fps: number
-    rpm: number
-    unitId: number
+    pixels: number
     unitCount: number
+    motorRpm: MotorRpm
+    sourceIp: string | null
+    targets: BackendTarget[]
   }
 }
 
@@ -19,7 +50,14 @@ export type BackendSequenceState = {
   revision: number
   sequence: SequenceDocument
   playbackMode: 'sequence' | 'single'
-  output: { fps: number; rpm: number; unitCount: number }
+  output: { fps: number; pixels: number; unitCount: number; motorRpm: MotorRpm }
+}
+
+/** 省略 unitIds 就是全部；沒給的欄位維持原值。 / Omitted unitIds means every unit; omitted fields keep their value. */
+export type MotorCommand = {
+  unitIds?: number[]
+  speed?: MotorSpeed
+  direction?: MotorDirection
 }
 
 async function readState<T>(response: Response): Promise<T> {
@@ -45,11 +83,19 @@ export async function applyBackendPreset(preset: EffectPreset): Promise<BackendS
   }))
 }
 
-export async function setBackendMotor(enabled: boolean): Promise<BackendState> {
+export async function setBackendMotor(command: MotorCommand): Promise<BackendState> {
   return readState<BackendState>(await fetch('/api/motor', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(command),
+  }))
+}
+
+export async function setBackendMoonCorrection(moonCorrection: boolean): Promise<BackendState> {
+  return readState<BackendState>(await fetch('/api/hardware', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ moonCorrection }),
   }))
 }
 
@@ -193,6 +239,8 @@ type ActivePlaybackBase = {
   frame: number
   /** 單色測試進行中才有：每台一色或 null。 / Only during a unit colour test: one color or null per unit. */
   unitColors?: (RgbColor | null)[]
+  /** 每台目前的馬達狀態（依 unitId 排列）。 / Each unit's current motor state, ordered by unitId. */
+  motor?: UnitMotor[]
 }
 
 export type SequencePlayback = ActivePlaybackBase & {

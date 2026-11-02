@@ -37,7 +37,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual((152, 5, 40), (config["pixels"], config["unit_count"], config["fps"]))
         self.assertEqual(DEFAULT_HARDWARE, config["hardware"])
         self.assertEqual(DEFAULT_MOTOR, config["motor"])
-        self.assertEqual(500, config["rpm"])
+        self.assertNotIn("rpm", config)  # per-unit rpm lives in motor.rpm
         self.assertEqual("random-leds", preset["effectId"])
 
     def test_omitted_sections_use_longn_defaults(self):
@@ -56,7 +56,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual({"color_order": "GRB", "brightness": 1.0, "moon_correction": False}, config["hardware"])
         self.assertEqual({"stop": 0, "mid": 100, "max": 255}, config["motor"]["speeds"])
         self.assertEqual((457, 458), (config["motor"]["speed_channel"], config["motor"]["direction_channel"]))
-        self.assertEqual(600, config["rpm"])
+        self.assertEqual({"mid": 200, "max": 600}, config["motor"]["rpm"])
 
     def test_motor_channels_can_move_to_fit_more_pixels(self):
         config = self.load(
