@@ -49,7 +49,7 @@ class SendTests(unittest.TestCase):
             config_path = root / "config.toml"
             config_path.write_text(
                 '[artnet]\nip = "192.0.2.20"\nuniverse = 0\n'
-                '[render]\npreset = "preset.json"\nfps = 40\nrpm = 360\npixels = 156\nunit_id = 1\nunit_count = 9\n',
+                '[render]\npreset = "preset.json"\nfps = 40\npixels = 152\nunit_id = 1\nunit_count = 5\n',
                 encoding="utf-8",
             )
             config, preset = load_config(config_path)

@@ -108,6 +108,11 @@ rpm = { mid = 130, max = 500 }   # max 為使用者提供；mid 依 60/230 比�
 [weather]                        # 照原樣，選填
 ```
 
+實作時定下的細節（M2）：
+- `[render].rpm` 已移除，寫了會報 unknown field。rpm 改放 `[motor].rpm`；`config["rpm"]` 暫時等於 `rpm.max`，供現有的相位估計和前端讀取，M5／M6 再改成每台各自的轉速。
+- `[hardware]`、`[motor]` 整段或個別欄位都可以省略，省略時用 LongN 的預設值；`render.pixels` 預設 152、`unit_count` 預設 5。
+- target 的 `universe` 和 `universes` 必須寫其中一個，不能同時寫；每個 target 的 dict 會另外帶一個 `universe`（等於第一個 universe），給還沒改成多 universe 的程式使用，M5 改完 `output.py` 後就移除。
+
 驗證規則照參考系統的嚴格程度：
 - 有多餘欄位就報錯。
 - 兩個 channel 不可重疊，也不可落在 LED 的範圍內。
@@ -180,7 +185,7 @@ Windows 10 相容性：
 | # | 內容 | 完成條件 |
 |---|---|---|
 | M1 ✅ | 複製 backend、frontend，在 macOS 上 `uv sync --locked` | 原有 backend 與 frontend 測試全部通過（2026-11-02：來源 `moon_observe@b736485`（v0.1.12+1）以 `git archive` 匯出；backend 86、frontend 117 個測試通過；`tsc` + build 通過；`npx vite-node scripts/generateBackendVectors.ts` 重新產生的 fixture 與原檔逐 byte 相同） |
-| M2 | `config.py` + `hardware.py` + golden test | payload 的 channel 排列逐 byte 符合 `Artnet.pde`；月亮校正數值符合 1.3 節 |
+| M2 ✅ | `config.py` + `hardware.py` + golden test | payload 的 channel 排列逐 byte 符合 `Artnet.pde`；月亮校正數值符合 1.3 節（2026-11-02：brightness 1.0 時與 LongN 移植版逐 byte 相同；brightness 0.4 加月亮校正時每個 channel 只會比 LongN 亮 0 或 1，因為 LongN 是先四捨五入再整數截斷，這裡是浮點數運算後只捨入一次；backend 共 102 個測試通過） |
 | M3 | `motor.py` + `/api/motor` + `/api/hardware` | API 測試：422/415/413 規則、只存在記憶體、重啟後一律 stop |
 | M4 | effects 改為 152 顆 + 重新產生測試資料 | 所有效果在 152 / 156 顆下前後端都一致 |
 | M5 | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0 |

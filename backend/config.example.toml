@@ -1,19 +1,53 @@
 [artnet]
-ip = "192.0.2.50"
-universe = 0
-# source_ip = "192.0.2.10" # Optional: bind a specific network interface.
+# Optional: bind the Art-Net Ethernet interface (LongN host NIC, see LongN/data/IP.ini).
+# source_ip = "2.20.18.9"
+
+# LongN controller box: U0 drives DMX (motor), U1 drives SPI (pixels); both get the same 512 bytes.
+[[artnet.targets]]
+unit_id = 1
+ip = "2.0.0.101"
+universes = [0, 1]
+
+[[artnet.targets]]
+unit_id = 2
+ip = "2.0.0.102"
+universes = [0, 1]
+
+[[artnet.targets]]
+unit_id = 3
+ip = "2.0.0.103"
+universes = [0, 1]
+
+[[artnet.targets]]
+unit_id = 4
+ip = "2.0.0.104"
+universes = [0, 1]
+
+[[artnet.targets]]
+unit_id = 5
+ip = "2.0.0.105"
+universes = [0, 1]
 
 [render]
 preset = "preset.example.json"
 sequence = "sequence.json"
-fps = 60
-rpm = 340
-pixels = 156
-unit_id = 1
-unit_count = 9
+fps = 40
+pixels = 152       # one semicircle: foot -> apex -> foot
+unit_count = 5
 
-# To output all nine units from one backend, replace ip/universe above with
-# one [[artnet.targets]] entry per unit (see backend/README.md).
+# Optional; these are the LongN defaults.
+[hardware]
+color_order = "GRB"
+brightness = 0.4        # 0..1, applied to every pixel channel
+moon_correction = true  # startup default; feet fade and apex dims while a unit runs at max speed
+
+# Optional; these are the LongN defaults. Channels are 1-based within the 512-byte frame.
+[motor]
+speed_channel = 457
+direction_channel = 458
+speeds = { stop = 0, mid = 60, max = 230 }
+directions = { cw = 0, ccw = 255 }
+rpm = { mid = 130, max = 500 }  # simulator and phase estimate only; mid is an estimate
 
 # Add the actual installation coordinates to enable Open-Meteo weather control.
 # [weather]
