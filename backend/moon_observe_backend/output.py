@@ -15,7 +15,8 @@ from typing import Any, Callable, Mapping, Sequence
 from stupidArtnet import StupidArtnet
 
 from .config import load_config
-from .control import MOTOR_CHANNEL, PresetStore, make_server
+from .control import PresetStore, make_server
+from .motor import HardwareStore, MotorStore
 from .effects import Rgb, completion_frames
 from .renderer import render_frame, rgb_bytes
 from .sequence import SequenceStore, render_sequence_frame
@@ -24,6 +25,9 @@ from .playback import PlaybackMonitor
 from .unit_colors import UnitColorStore
 from .weather import WeatherStore
 
+# 參考系統的舊格式（ch469 = 0/255），M5 改成 hardware.build_payload 的 512 bytes。
+# Reference-system frame (ch469 = 0/255); M5 replaces it with hardware.build_payload.
+MOTOR_CHANNEL = 469  # Art-Net/DMX channels are numbered from 1.
 ARTNET_PACKET_SIZE = MOTOR_CHANNEL + 1  # ArtDmx and stupidArtnet require an even length.
 SINGLE_ROUND_SECONDS = 60  # A single effect "round" for weather visits: at least this long.
 
@@ -224,10 +228,13 @@ def main(argv: list[str] | None = None) -> int:
         service_label = "Page and API" if frontend_dir else "API"
         playback_monitor = PlaybackMonitor(config["fps"], config["unit_count"])
         unit_color_store = UnitColorStore(config["unit_count"])
+        motor_store = MotorStore(config["motor"], config["unit_count"])
+        hardware_store = HardwareStore(config["hardware"], config["pixels"])
         with make_server(store, config, args.api_port, host=args.api_host,
                          sequence_store=sequence_store, frontend_dir=frontend_dir,
                          weather_store=weather_store, playback_monitor=playback_monitor,
-                         unit_color_store=unit_color_store) as server:
+                         unit_color_store=unit_color_store, motor_store=motor_store,
+                         hardware_store=hardware_store) as server:
             if weather_store is not None:
                 weather_store.start()
             try:
@@ -240,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     print(f"Sending {preset['effectId']} -> {len(config['targets'])} Art-Net target(s) at {config['fps']} FPS. {service_label} listening on {args.api_host}:{args.api_port}. Ctrl+C to stop.", flush=True)
                     sent = stream(config, preset, seconds=args.seconds,
-                                  preset_provider=store.snapshot, motor_provider=store.motor_value,
+                                  preset_provider=store.snapshot,
                                   sequence_provider=sequence_store.snapshot,
                                   weather_provider=weather_store.snapshot if weather_store is not None else None,
                                   playback_reporter=playback_monitor.report,

@@ -128,6 +128,13 @@ rpm = { mid = 130, max = 500 }   # max 為使用者提供；mid 依 60/230 比�
 
 `GET /api/playback` 另外附上每台目前的馬達狀態，讓前端模擬器可以照著轉。
 
+實作時定下的細節（M3）：
+- `motor.py` 有 `MotorStore`（每台的 speed／direction）和 `HardwareStore`（月亮校正開關），兩者都只存在記憶體；重啟後馬達一律 `stop`、方向回到 `cw`，月亮校正回到 config 的 `moon_correction`。
+- `/api/motor` 至少要給 `speed` 或 `direction` 其中一個，沒給的欄位維持原值；`unitIds` 必須是不重複的 1..`unit_count` 整數。舊的 `{"enabled": bool}` 會回 422。上限 256 bytes，`/api/hardware` 上限 64 bytes。
+- `/api/motor`、`/api/hardware`、`/api/preset` 都回傳完整的 `/api/state`。`state.motor` 另外有自己的 `revision`、`levels.rpm`，每台多一個 `rpm`（stop 為 0）；`state.hardware` 多一個 `moonCorrectionDefault`。頂層的 `revision` 現在只計算 preset 的變更。
+- `/api/playback` 在 `active` 時附上 `motor: [{speed, direction}, …]`（依 unitId 排列）。
+- M3 到 M5 之間：`output.py` 仍送參考系統的 470 bytes 舊格式，馬達指令不會送出（ch457／458 是 0）；前端的馬達按鈕還是送舊格式，會收到 422，M6 改。
+
 ## 4. 前端修改
 
 - `preview3d/geometry.ts`：`LEDS_PER_ARC` 改從後端的 `output.pixels` 取得（離線預設 152）。
@@ -186,7 +193,7 @@ Windows 10 相容性：
 |---|---|---|
 | M1 ✅ | 複製 backend、frontend，在 macOS 上 `uv sync --locked` | 原有 backend 與 frontend 測試全部通過（2026-11-02：來源 `moon_observe@b736485`（v0.1.12+1）以 `git archive` 匯出；backend 86、frontend 117 個測試通過；`tsc` + build 通過；`npx vite-node scripts/generateBackendVectors.ts` 重新產生的 fixture 與原檔逐 byte 相同） |
 | M2 ✅ | `config.py` + `hardware.py` + golden test | payload 的 channel 排列逐 byte 符合 `Artnet.pde`；月亮校正數值符合 1.3 節（2026-11-02：brightness 1.0 時與 LongN 移植版逐 byte 相同；brightness 0.4 加月亮校正時每個 channel 只會比 LongN 亮 0 或 1，因為 LongN 是先四捨五入再整數截斷，這裡是浮點數運算後只捨入一次；backend 共 102 個測試通過） |
-| M3 | `motor.py` + `/api/motor` + `/api/hardware` | API 測試：422/415/413 規則、只存在記憶體、重啟後一律 stop |
+| M3 ✅ | `motor.py` + `/api/motor` + `/api/hardware` | API 測試：422/415/413 規則、只存在記憶體、重啟後一律 stop（2026-11-02：新增 `test_motor.py` 14 個測試，backend 共 116 個測試通過；實際啟動 `--api-only` 用 curl 測過 state／motor／hardware） |
 | M4 | effects 改為 152 顆 + 重新產生測試資料 | 所有效果在 152 / 156 顆下前後端都一致 |
 | M5 | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0 |
 | M6 | 前端 | `npm test`、`tsc` 通過；用 Playwright 截圖確認 5 台的畫面和馬達 UI |

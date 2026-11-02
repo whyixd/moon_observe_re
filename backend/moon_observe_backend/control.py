@@ -1,4 +1,4 @@
-"""Preset and motor-command API; Art-Net output remains in the main loop."""
+"""Preset, motor and hardware API; Art-Net output remains in the main loop."""
 
 from __future__ import annotations
 
@@ -13,9 +13,6 @@ from typing import Any, Mapping
 
 from .effects import preset_to_json, validate_preset
 
-MOTOR_CHANNEL = 469  # Art-Net/DMX channels are numbered from 1.
-
-
 class PresetStore:
     def __init__(self, preset_path: str | Path, pixels: int) -> None:
         self.path = Path(preset_path)
@@ -24,24 +21,10 @@ class PresetStore:
         self.active = validate_preset(json.loads(self.path.read_text(encoding="utf-8")), pixels)
         self.raw = preset_to_json(self.active)
         self.revision = 0
-        self.motor_enabled = False  # Never resume a running motor after backend restart.
 
     def snapshot(self) -> Mapping[str, Any]:
         with self.lock:
             return self.active
-
-    def motor_value(self) -> int:
-        with self.lock:
-            return 255 if self.motor_enabled else 0
-
-    def apply_motor(self, raw: Any, config: Mapping[str, Any]) -> dict[str, Any]:
-        if not isinstance(raw, dict) or set(raw) != {"enabled"} or type(raw["enabled"]) is not bool:
-            raise ValueError("motor command must be {\"enabled\": true|false}")
-        with self.lock:
-            if self.motor_enabled != raw["enabled"]:
-                self.motor_enabled = raw["enabled"]
-                self.revision += 1
-            return self._state_unlocked(config)
 
     def state(self, config: Mapping[str, Any]) -> dict[str, Any]:
         with self.lock:
@@ -73,8 +56,6 @@ class PresetStore:
         return {
             "revision": self.revision,
             "preset": self.raw,
-            "motor": {"channel": MOTOR_CHANNEL, "enabled": self.motor_enabled,
-                      "value": 255 if self.motor_enabled else 0},
             "output": {
                 "ip": config["ip"], "universe": config["universe"],
                 "fps": config["fps"], "rpm": config["rpm"],
@@ -95,6 +76,8 @@ def make_server(
     weather_store: Any = None,
     playback_monitor: Any = None,
     unit_color_store: Any = None,
+    motor_store: Any = None,
+    hardware_store: Any = None,
 ) -> ThreadingHTTPServer:
     if not 0 <= port <= 65535:
         raise ValueError("api port must be 0..65535")
@@ -120,6 +103,13 @@ def make_server(
             self.end_headers()
             self.wfile.write(body)
 
+        def _state(self, result: dict[str, Any]) -> dict[str, Any]:
+            if motor_store is not None:
+                result["motor"] = motor_store.state()
+            if hardware_store is not None:
+                result["hardware"] = hardware_store.state()
+            return result
+
         def _sequence_state(self) -> dict[str, Any]:
             result = sequence_store.state()
             result["output"] = {
@@ -134,7 +124,7 @@ def make_server(
             elif self.path == "/api/weather/palette" and palette_store is not None:
                 self._respond(200, palette_store.state())
             elif self.path == "/api/state":
-                self._respond(200, store.state(config))
+                self._respond(200, self._state(store.state(config)))
             elif self.path == "/api/sequence" and sequence_store is not None:
                 self._respond(200, self._sequence_state())
             elif self.path == "/api/playback":
@@ -143,6 +133,10 @@ def make_server(
                 if result["active"] and test is not None and test["active"]:
                     # 讓 3D 鏡像也顯示單色測試。 / Lets the 3D mirror show the unit colour test.
                     result["unitColors"] = test["colors"]
+                if result["active"] and motor_store is not None:
+                    # 讓 3D 鏡像照每台的轉速與方向轉。 / Lets the 3D mirror spin each unit as commanded.
+                    result["motor"] = [{"speed": speed, "direction": direction}
+                                       for speed, direction in motor_store.snapshot()]
                 self._respond(200, result)
             elif self.path == "/api/test/units" and unit_color_store is not None:
                 self._respond(200, unit_color_store.snapshot())
@@ -169,7 +163,7 @@ def make_server(
 
         def do_PUT(self) -> None:
             limits = {
-                "/api/preset": 16384, "/api/motor": 64, "/api/sequence": 262144,
+                "/api/preset": 16384, "/api/motor": 256, "/api/hardware": 64, "/api/sequence": 262144,
                 "/api/weather/override": 256, "/api/weather/palette": 16384,
                 "/api/playback/restart": 64, "/api/weather/visit": 64, "/api/test/units": 4096,
             }
@@ -177,7 +171,9 @@ def make_server(
                     or (self.path in ("/api/sequence", "/api/playback/restart") and sequence_store is None)
                     or (self.path in ("/api/weather/override", "/api/weather/visit") and weather_store is None)
                     or (self.path == "/api/weather/palette" and palette_store is None)
-                    or (self.path == "/api/test/units" and unit_color_store is None)):
+                    or (self.path == "/api/test/units" and unit_color_store is None)
+                    or (self.path == "/api/motor" and motor_store is None)
+                    or (self.path == "/api/hardware" and hardware_store is None)):
                 self._respond(404, {"error": "not found"})
                 return
             if self.headers.get_content_type() != "application/json":
@@ -200,7 +196,7 @@ def make_server(
                     sequence_store.restart(raw)
                     result = self._sequence_state()
                 elif self.path == "/api/preset":
-                    result = store.apply(raw, config)
+                    result = self._state(store.apply(raw, config))
                     if sequence_store is not None:
                         sequence_store.use_single_preset()
                 elif self.path == "/api/weather/override":
@@ -211,8 +207,12 @@ def make_server(
                     result = palette_store.apply(raw)
                 elif self.path == "/api/test/units":
                     result = unit_color_store.apply(raw)
+                elif self.path == "/api/motor":
+                    motor_store.apply(raw)
+                    result = self._state(store.state(config))
                 else:
-                    result = store.apply_motor(raw, config)
+                    hardware_store.apply(raw)
+                    result = self._state(store.state(config))
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
                 self._respond(422, {"error": str(error)})
                 return

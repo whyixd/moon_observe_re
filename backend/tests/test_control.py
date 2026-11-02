@@ -53,34 +53,7 @@ class ControlTests(unittest.TestCase):
                         self.assertIsNone(response.headers.get("Access-Control-Allow-Origin"))
                     self.assertEqual("center-out-sine", initial["preset"]["effectId"])
                     self.assertEqual(0, initial["revision"])
-                    self.assertEqual({"channel": 469, "enabled": False, "value": 0}, initial["motor"])
-
-                    motor_request = Request(
-                        base + "/api/motor", b'{"enabled":true}',
-                        {"Content-Type": "application/json"}, method="PUT",
-                    )
-                    with urlopen(motor_request) as response:
-                        motor_state = json.load(response)
-                    self.assertEqual({"channel": 469, "enabled": True, "value": 255}, motor_state["motor"])
-                    self.assertEqual(255, store.motor_value())
-
-                    bad_motor_request = Request(
-                        base + "/api/motor", b'{"enabled":1}',
-                        {"Content-Type": "application/json"}, method="PUT",
-                    )
-                    with self.assertRaises(HTTPError) as motor_error:
-                        urlopen(bad_motor_request)
-                    self.assertEqual(422, motor_error.exception.code)
-                    self.assertEqual(255, store.motor_value())
-
-                    stop_request = Request(
-                        base + "/api/motor", b'{"enabled":false}',
-                        {"Content-Type": "application/json"}, method="PUT",
-                    )
-                    with urlopen(stop_request) as response:
-                        stopped = json.load(response)
-                    self.assertEqual(0, stopped["motor"]["value"])
-                    self.assertEqual(0, store.motor_value())
+                    self.assertNotIn("motor", initial)  # no motor store wired in
 
                     updated = default_preset("random-leds")
                     request = Request(
@@ -89,7 +62,7 @@ class ControlTests(unittest.TestCase):
                     )
                     with urlopen(request) as response:
                         result = json.load(response)
-                    self.assertEqual(3, result["revision"])
+                    self.assertEqual(1, result["revision"])
                     self.assertEqual("random-leds", json.loads(path.read_text(encoding="utf-8"))["effectId"])
 
                     bad = {**updated, "effectId": "unknown"}
@@ -100,9 +73,8 @@ class ControlTests(unittest.TestCase):
                     with self.assertRaises(HTTPError) as caught:
                         urlopen(request)
                     self.assertEqual(422, caught.exception.code)
-                    self.assertEqual(3, store.state(CONFIG)["revision"])
+                    self.assertEqual(1, store.state(CONFIG)["revision"])
                     self.assertEqual("random-leds", json.loads(path.read_text(encoding="utf-8"))["effectId"])
-                    self.assertEqual(0, PresetStore(path, 156).motor_value())
                 finally:
                     server.shutdown()
                     worker.join(timeout=2)
@@ -129,10 +101,11 @@ class ControlTests(unittest.TestCase):
                         self.assertIn(b"window.ready", response.read())
                     with urlopen(base + "/api/state") as response:
                         self.assertEqual("center-out-sine", json.load(response)["preset"]["effectId"])
-                    request = Request(base + "/api/motor", b'{"enabled":true}',
+                    request = Request(base + "/api/motor", b'{"speed":"max"}',
                                       {"Content-Type": "application/json"}, method="PUT")
-                    with urlopen(request) as response:
-                        self.assertEqual(255, json.load(response)["motor"]["value"])
+                    with self.assertRaises(HTTPError) as no_motor:
+                        urlopen(request)  # make_server without a motor store
+                    self.assertEqual(404, no_motor.exception.code)
                     with self.assertRaises(HTTPError) as missing:
                         urlopen(base + "/api/missing")
                     self.assertEqual(404, missing.exception.code)
