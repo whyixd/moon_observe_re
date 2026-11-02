@@ -1,0 +1,270 @@
+:root {
+  color: #eef6ff;
+  background: #05070b;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    Segoe UI, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at 24% 12%, rgba(55, 94, 140, 0.2), transparent 34%),
+    #05070b;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.preview-shell {
+  width: min(1440px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 1.25rem;
+}
+
+.preview-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.35rem 0 1rem;
+}
+
+.preview-header h1,
+.preview-controls h2 {
+  margin: 0;
+  letter-spacing: -0.035em;
+}
+
+.preview-header h1 {
+  font-size: clamp(1.65rem, 3vw, 2.55rem);
+}
+
+.preview-controls h2 {
+  font-size: 1.2rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.35rem;
+  color: #77d9ff;
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.subtitle {
+  margin: 0.4rem 0 0;
+  color: #8d9cad;
+  font-size: 0.84rem;
+}
+
+.back-link {
+  flex: none;
+  border: 1px solid #304052;
+  border-radius: 999px;
+  padding: 0.62rem 0.92rem;
+  color: #dceeff;
+  background: rgba(15, 22, 30, 0.85);
+  font-size: 0.76rem;
+  text-decoration: none;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.back-link:hover {
+  border-color: #65cdf5;
+  background: rgba(31, 54, 69, 0.9);
+}
+
+.preview-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 286px;
+  min-height: calc(100vh - 8.6rem);
+  overflow: hidden;
+  border: 1px solid #202b36;
+  border-radius: 1rem;
+  background: rgba(8, 12, 17, 0.9);
+  box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.34);
+}
+
+.canvas-panel {
+  position: relative;
+  min-height: 620px;
+  overflow: hidden;
+  background: #05070b;
+}
+
+.canvas-panel canvas {
+  display: block;
+  touch-action: none;
+}
+
+.interaction-hint {
+  position: absolute;
+  right: 1rem;
+  bottom: 0.9rem;
+  border: 1px solid rgba(111, 157, 194, 0.2);
+  border-radius: 999px;
+  padding: 0.42rem 0.68rem;
+  color: #8193a4;
+  background: rgba(5, 8, 12, 0.74);
+  font-size: 0.66rem;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.preview-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1.35rem;
+  border-left: 1px solid #202b36;
+  padding: 1.2rem;
+  background:
+    linear-gradient(180deg, rgba(21, 29, 39, 0.96), rgba(10, 15, 21, 0.96));
+}
+
+.range-control,
+.toggle-control {
+  display: flex;
+  color: #cbd8e4;
+  font-size: 0.78rem;
+}
+
+.range-control {
+  flex-direction: column;
+  gap: 0.72rem;
+}
+
+.range-control > span,
+.toggle-control {
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.range-control output {
+  float: right;
+  color: #6fddff;
+  font-variant-numeric: tabular-nums;
+}
+
+.range-control input {
+  width: 100%;
+  accent-color: #5bd8ff;
+}
+
+.toggle-control span {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.toggle-control small {
+  color: #718396;
+  font-size: 0.68rem;
+}
+
+.toggle-control input {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: #5bd8ff;
+}
+
+.model-facts {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid #263443;
+  border-radius: 0.72rem;
+}
+
+.model-facts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.64rem 0.72rem;
+  border-bottom: 1px solid #202c38;
+  font-size: 0.7rem;
+}
+
+.model-facts div:last-child {
+  border-bottom: 0;
+}
+
+.model-facts dt {
+  color: #708397;
+}
+
+.model-facts dd {
+  margin: 0;
+  color: #d6e3ee;
+  text-align: right;
+}
+
+.assumption-note {
+  margin: auto 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid #25313e;
+  color: #708295;
+  font-size: 0.7rem;
+  line-height: 1.65;
+}
+
+@media (max-width: 850px) {
+  .preview-stage {
+    grid-template-columns: 1fr;
+  }
+
+  .canvas-panel {
+    min-height: 62vh;
+  }
+
+  .preview-controls {
+    border-top: 1px solid #202b36;
+    border-left: 0;
+  }
+
+  .assumption-note {
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 580px) {
+  .preview-shell {
+    padding: 0.75rem;
+  }
+
+  .preview-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .canvas-panel {
+    min-height: 58vh;
+  }
+
+  .interaction-hint {
+    right: 0.7rem;
+    bottom: 0.7rem;
+    font-size: 0.59rem;
+  }
+}

@@ -1,0 +1,203 @@
+# moon_observe_re 實作計畫（定稿草案）
+
+> 2026-11-02。目標：在 LongN 的硬體（5 台旋轉半圓燈）上執行 Moon Observe 系統。
+> 系統部分（effect engine、串接、天氣、API、前端、設定檔）沿用 `system-reference.md`；
+> 從 LongN 只保留「LED 排列」與「馬達控制」；部署平台改為 **Windows**。
+
+## 0. 已確認的決策
+
+| # | 決策 |
+|---|---|
+| 1 | 把 `~/Dev/moon_observe` 的 `backend/` 與 `frontend/` 複製到本 repo 再修改，兩邊互不影響 |
+| 2 | effect engine 直接算 152 顆，每顆獨立，不做鏡像 |
+| 3 | 馬達只透過 API 手動控制（每台的速度、方向），不放進串接 |
+| 4 | 保留月亮校正，可以啟用或關閉 |
+| 5 | 前端一起改成 5 台 × 152 顆，加入每台的馬達 UI |
+| 6 | 部署改為 Windows，取代 Pi 的 systemd 流程 |
+| 7 | GitHub repo：`whyixd/moon_observe_re`（public、目前是空的），release 從這裡發布 |
+| 8 | 現場是 Windows 10、可以上網；Art-Net 走有線 Ethernet，網際網路走 Wi-Fi |
+| 9 | 馬達 rpm = 500（max）；其他現場數值先用預設值 |
+| 10 | 不做 Art-Net 失聯保護（控制盒收不到資料時不會自己停，目前先不處理） |
+
+以下為我先採用的預設，可以再調整：
+- 馬達速度用三段等級 `stop / mid / max`，對應的 byte 值寫在 config（預設 0 / 60 / 230，與 LongN 相同）。
+- 月亮校正：config 決定開機時的預設，前端可以即時切換（只存在記憶體）；只在該台馬達為 `max` 時套用，與 LongN 相同。
+- 程式結束時，對每台每個 universe 送全 0 的 512 bytes（LED 全暗、馬達停止）兩次，與 LongN 相同。
+
+## 1. 從 LongN 保留的硬體規格
+
+### 1.1 LED 排列
+- 5 台，IP `2.0.0.101`–`2.0.0.105`，subnet 0。
+- 每台把同一份 512 bytes 同時送到 universe 0 和 universe 1（控制盒的 U0 走 DMX → 馬達，U1 走 SPI → LED）。
+- 每台 152 顆：index 0 是一腳，75/76 是頂點，151 是另一腳（從 `TransLight.pde` 推斷，**需要現場確認**）。
+- 色序 GRB，`brightness` 預設 0.4。
+- LongN 的 `IP.ini`（`2.20.18.9`）推測是主機自己 Art-Net 網卡的 IP，可以填在 `artnet.source_ip`。
+
+### 1.2 Payload（每台 512 bytes）
+
+| Channel（從 1 起算） | 內容 |
+|---|---|
+| 1–456 | 152 × (G, R, B)，算法為 `floor(clamp01(c × 校正 × brightness) × 255 + 0.5)` |
+| 457 | 馬達速度：`stop`=0、`mid`=60、`max`=230 |
+| 458 | 方向：`cw`=0、`ccw`=255 |
+| 459–512 | 0 |
+
+### 1.3 月亮校正（以半圓位置計算，兩邊對稱）
+- `h = p`（p < 76）或 `151 - p`（p ≥ 76）；h=0 是腳，h=75 是頂點。
+- 靠腳的 15 顆（h < 15）：係數 = `(h + 1) / 15`。
+- 靠頂點的 7 顆（h ≥ 69）：係數 = `0.3 + 0.1 × (75 - h)`。
+- 只在 `moon_correction` 啟用、且該台速度為 `max` 時套用。
+
+## 2. 專案結構
+
+```
+moon_observe_re/
+  LongN/                         # 原專案，只留作對照，不修改
+  PLAN.md                        # 本文件
+  system-reference.md            # 完成後改寫成本系統的版本
+  backend/                       # 從 moon_observe/backend 複製
+    pyproject.toml               # py3.12、stupidartnet==1.6.0、package=false（照原樣）
+    config.example.toml          # 改成 5 個 targets、[hardware]、[motor]
+    moon_observe_backend/
+      hardware.py   [新增]       # 月亮校正、GRB、亮度、組 512 bytes payload
+      motor.py      [新增]       # MotorStore：每台的 speed／direction，只存在記憶體，重啟後一律 stop
+      config.py     [修改]       # pixels 可設定（預設 152）、targets.universes、[hardware]、[motor]
+      output.py     [修改]       # 改用 hardware.build_payload；每個 (target, universe) 一個 StupidArtnet；新的結束流程
+      control.py    [修改]       # /api/motor 新格式、/api/hardware、state 回傳硬體資訊
+      renderer.py   [小改]       # world-upper-half 的相位估計改用每台的 rpm 與方向
+      effects.py    [小改]       # litCount／darkGap 上限改為依 led_count；效果邏輯不動
+      sequence.py / palette.py / weather.py / playback.py / unit_colors.py   # 照原樣
+    tests/                       # 原有測試保留，另加 test_hardware.py、test_motor.py、payload golden test
+    deploy/                      # 改寫為 Windows 版（第 5 節）
+  frontend/                      # 從 moon_observe/frontend 複製（第 4 節）
+```
+
+## 3. 設定檔與 API
+
+### 3.1 `config.toml`
+
+```toml
+[artnet]
+source_ip = "2.20.18.9"          # 選填：綁定 Art-Net 網卡
+
+[[artnet.targets]]
+unit_id = 1
+ip = "2.0.0.101"
+universes = [0, 1]               # 新欄位；保留原本的 universe = n 寫法
+# … unit 2–5
+
+[render]
+preset = "preset.json"
+sequence = "sequence.json"
+fps = 40
+pixels = 152                     # 改為 1..512/3 的範圍檢查，不再鎖定 156
+unit_count = 5
+
+[hardware]                       # 新增
+color_order = "GRB"              # RGB / GRB / BRG …
+brightness = 0.4                 # 0..1
+moon_correction = true           # 開機時的預設
+
+[motor]                          # 新增
+speed_channel = 457
+direction_channel = 458
+speeds = { stop = 0, mid = 60, max = 230 }
+directions = { cw = 0, ccw = 255 }
+rpm = { mid = 130, max = 500 }   # max 為使用者提供；mid 依 60/230 比例估計，之後可改；只用於模擬器與相位估計
+
+[weather]                        # 照原樣，選填
+```
+
+驗證規則照參考系統的嚴格程度：
+- 有多餘欄位就報錯。
+- 兩個 channel 不可重疊，也不可落在 LED 的範圍內。
+- `(ip, universe)` 不可重複。
+
+### 3.2 API 變更（其餘照 `system-reference.md` §3.2）
+
+| Method | Path | 變更 |
+|---|---|---|
+| GET | `/api/state` | `motor` 改為 `{channels:{speed,direction}, levels, units:[{unitId, speed, direction, value, directionValue}]}`；新增 `hardware:{colorOrder, brightness, moonCorrection, pixels}` |
+| PUT | `/api/motor` | `{"unitIds":[1,2]?, "speed":"stop"\|"mid"\|"max"?, "direction":"cw"\|"ccw"?}`；省略 `unitIds` 就是全部；只存在記憶體 |
+| PUT | `/api/hardware` | `{"moonCorrection": bool}`；只存在記憶體，重啟後回到 config 的預設 |
+
+`GET /api/playback` 另外附上每台目前的馬達狀態，讓前端模擬器可以照著轉。
+
+## 4. 前端修改
+
+- `preview3d/geometry.ts`：`LEDS_PER_ARC` 改從後端的 `output.pixels` 取得（離線預設 152）。
+- `simulation/model.ts`：1×9 圓弧改成可設定的 5 台排列，先用 LongN `Simulation.pde:calcMotorPosition` 的排列，**需要現場確認**。視角選項改成〔單組｜全部〕，unit 選擇器依 `unitCount` 產生。
+- 模擬器的轉速：每台依各自的 speed 等級 → rpm 和方向旋轉。後端控制模式下照後端狀態；模擬模式下用本地狀態。
+- ControlPanel「後端」分頁的馬達區：
+  - 每台一列：〔停｜中｜全速〕〔順｜逆〕。
+  - 加上「全部」列，以及月亮校正開關。
+- 「物理」分頁：Motor speed 改成 mid / max 兩個 rpm（連上後端時由後端鎖定）。
+- effects 中依 156 寫死的參數上限（`periodicLeds.ts`、`randomLeds.ts`）改為依 ledCount。
+- `generateBackendVectors.ts` 加產生一份 152 顆的測試資料，前後端都要比對。
+
+## 5. Windows 部署（取代 Pi 的 systemd）
+
+沿用「版本化、不可變 release」的原則，只是換成 Windows 的機制：
+
+| 用途 | Pi（參考） | Windows（本專案） |
+|---|---|---|
+| 程式位置 | `/opt/moon-observe/releases/<v>`、`current` symlink | `C:\MoonObserve\releases\<v>`、`current` junction（停止服務後切換，失敗就回退） |
+| 設定與可寫資料 | `/etc/moon-observe/{config.toml, preset/}` | `C:\ProgramData\MoonObserve\{config.toml, preset\, logs\}` |
+| 服務 | systemd unit | **WinSW**（固定版本並驗證 SHA-256）；`Automatic (Delayed Start)`；失敗時自動重啟 |
+| 執行帳號 | system user `moon-observe` | `NT AUTHORITY\LocalService`；ACL 只允許寫入 `preset\` 和 `logs\` |
+| 正常停止 | `KillSignal=SIGINT` | WinSW 停止時送 Ctrl+C → KeyboardInterrupt → 關燈、馬達停止（**需要實測確認**） |
+| Log | journald | WinSW 的 log 檔，依大小輪替 |
+| 安裝腳本 | `bootstrap.sh`、`install-release.sh` | `bootstrap.ps1`、`install-release.ps1`、`uninstall.ps1` |
+| Artifact | `tar.gz` | `zip`（含 backend、前端 dist、WinSW）+ `SHA256SUMS` |
+
+`install-release.ps1` 的流程：
+1. 取得 artifact：從 GitHub Release 下載，或用 `-ArtifactPath` 指定本機 zip（現場沒網路時用）。
+2. 驗證 SHA-256 → 解壓。
+3. 執行 `uv sync --frozen`，Python 由 uv 管理，放在 `C:\MoonObserve\.uv-python`。
+4. 用新版執行 `run.py --check`，驗證現有設定。
+5. 停止服務 → 切換 junction → 啟動服務。
+6. 健康檢查：`/api/state` 和 `/` 都要回應，3 秒後仍正常。
+7. 失敗就自動切回前一版；成功後保留最近 3 版。
+
+Windows 10 相容性：
+- 腳本以系統內建的 **Windows PowerShell 5.1** 為準，不使用 PowerShell 7 才有的語法（`??`、三元運算子、`ForEach-Object -Parallel`）。
+- 下載前強制啟用 TLS 1.2；`Invoke-WebRequest` 加上 `-UseBasicParsing`。
+- junction 用 `New-Item -ItemType Junction`，不需要開發人員模式。
+- repo 是 public，下載 release **不需要 GitHub token**；`bootstrap.ps1` 保留「選填 token」以備日後改成 private。
+
+網路（Art-Net 走 Ethernet、網際網路走 Wi-Fi）：
+- Ethernet：固定 IP `2.20.18.9/8`（沿用 LongN `IP.ini`），**不設預設閘道**，避免搶走 Wi-Fi 的對外路由；`2.0.0.0/8` 的路由自然走 Ethernet。
+- `config.toml` 設 `artnet.source_ip = "2.20.18.9"`，把 Art-Net 綁在 Ethernet 送出。
+- Wi-Fi：DHCP，負責天氣（Open-Meteo）、GitHub 下載和校時。
+- 防火牆：允許 TCP 8765 inbound，供同一 Wi-Fi 的裝置開控制頁。沒有閘道的 Ethernet 會被判定為「未識別的網路／公用」，規則只開在 Wi-Fi 所屬的設定檔（Private），避免把 API 暴露到 Art-Net 網段以外。
+- 健康檢查和 README 加入網卡檢查：Ethernet 有 `2.20.18.9`、能 ping 到 `2.0.0.101`–`105`。
+- 電源：關閉睡眠和硬碟休眠。
+- Windows Update：設定使用時段。重開機後服務會自動啟動，不需要登入（比 LongN 原本的 `.bat` 加 `.exe` 更穩）。
+- 時區設為 Asia/Taipei（天氣整點造訪會用到）。
+
+## 6. 里程碑與驗證
+
+| # | 內容 | 完成條件 |
+|---|---|---|
+| M1 ✅ | 複製 backend、frontend，在 macOS 上 `uv sync --locked` | 原有 backend 與 frontend 測試全部通過（2026-11-02：來源 `moon_observe@b736485`（v0.1.12+1）以 `git archive` 匯出；backend 86、frontend 117 個測試通過；`tsc` + build 通過；`npx vite-node scripts/generateBackendVectors.ts` 重新產生的 fixture 與原檔逐 byte 相同） |
+| M2 | `config.py` + `hardware.py` + golden test | payload 的 channel 排列逐 byte 符合 `Artnet.pde`；月亮校正數值符合 1.3 節 |
+| M3 | `motor.py` + `/api/motor` + `/api/hardware` | API 測試：422/415/413 規則、只存在記憶體、重啟後一律 stop |
+| M4 | effects 改為 152 顆 + 重新產生測試資料 | 所有效果在 152 / 156 顆下前後端都一致 |
+| M5 | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0 |
+| M6 | 前端 | `npm test`、`tsc` 通過；用 Playwright 截圖確認 5 台的畫面和馬達 UI |
+| M7 | Windows 部署腳本 | 在 Windows 機器上完成：安裝 → 升級 → 回退 → 停止時馬達確實停下 |
+| M8 | 文件 | 改寫 `system-reference.md`、backend 與 deploy 的 README |
+
+## 7. Git 與 repo 內容
+
+- 在本目錄 `git init`，remote 設為 `https://github.com/whyixd/moon_observe_re.git`，預設分支 `master`（與參考 repo 相同）。
+- repo 是 **public**，以下內容**不進版控**（寫進 `.gitignore`）：
+  - `LongN/data/*.mov`、`LongN/application.windows32/`、`LongN/application.windows64/`（影片約 210 MB，加上兩份 Java runtime 和 exe）
+  - `config.toml`、`preset.json`、`sequence.json`、`palette.json`（與參考 repo 相同，只放 example）
+  - `dist/`、`node_modules/`、`.venv/`
+- LongN 只保留 `*.pde`、`data/point798.txt`、`data/IP.ini` 作為對照。
+
+## 8. 已確認、先不處理
+
+- 控制盒收不到 Art-Net 時不會自己停馬達，目前不做額外保護；只保留「程式正常結束時送全 0」。
+- 5 台的排列位置、152 顆的接線方向（index 0 在哪一腳）先用預設值，之後到現場再調整 config 和前端排列。

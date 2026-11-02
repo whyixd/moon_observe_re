@@ -1,0 +1,29 @@
+# Template: install-release.sh replaces @INSTALL_ROOT@, @CONFIG_ROOT@ and @SERVICE_USER@.
+[Unit]
+Description=Moon Observe Art-Net backend and control page
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_USER@
+WorkingDirectory=@INSTALL_ROOT@/current
+# One process serves Art-Net output, the API and the built frontend on port 8765 (all interfaces).
+ExecStart=@INSTALL_ROOT@/current/.venv/bin/python run.py --config @CONFIG_ROOT@/config.toml --frontend-dir @INSTALL_ROOT@/current/frontend
+Restart=on-failure
+RestartSec=3
+# SIGINT raises KeyboardInterrupt, so a running motor gets one best-effort 0 command on stop.
+KillSignal=SIGINT
+TimeoutStopSec=10
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+# Only the preset directory is writable: the API saves preset, sequence and palette there.
+ReadWritePaths=@CONFIG_ROOT@/preset
+
+[Install]
+WantedBy=multi-user.target

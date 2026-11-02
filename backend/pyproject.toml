@@ -1,0 +1,11 @@
+[project]
+name = "moon-observe-backend"
+version = "0.1.0"
+description = "Minimal continuous Art-Net effect output"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "stupidartnet==1.6.0",
+]
+
+[tool.uv]
+package = false

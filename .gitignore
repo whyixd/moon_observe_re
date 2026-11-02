@@ -1,0 +1,31 @@
+# Frontend dependencies and build output
+node_modules/
+dist/
+
+# Python / uv local state
+.venv/
+__pycache__/
+*.pyc
+.uv-cache*/
+
+# Local Art-Net endpoints and runtime data (only *.example.* files are tracked)
+backend/config.toml
+backend/preset.json
+backend/sequence.json
+backend/palette.json
+
+# Temporary verification directories
+.tmp_*/
+
+# LongN (Processing original): keep only the .pde sources and small data files for reference.
+# Videos (~210 MB), the exported Windows builds (Java runtime, exe, dll) stay out of the public repo.
+LongN/application.windows32/
+LongN/application.windows64/
+LongN/data/*.mov
+LongN/data/*.exe
+LongN/data/*.dll
+LongN/data/*.bat
+LongN/*.bat
+
+# macOS Finder metadata
+.DS_Store

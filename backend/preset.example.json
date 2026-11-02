@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 2,
+  "effectId": "random-leds",
+  "parameters": {
+    "litCount": 12,
+    "holdFrames": 4,
+    "durationMode": 0,
+    "minHoldFrames": 1
+  },
+  "color": {
+    "mode": "gradient",
+    "axis": "radius",
+    "colors": [
+      {
+        "r": 0.2,
+        "g": 0.92,
+        "b": 1
+      },
+      {
+        "r": 0.66,
+        "g": 0.28,
+        "b": 1
+      }
+    ]
+  }
+}

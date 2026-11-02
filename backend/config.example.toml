@@ -1,0 +1,31 @@
+[artnet]
+ip = "192.0.2.50"
+universe = 0
+# source_ip = "192.0.2.10" # Optional: bind a specific network interface.
+
+[render]
+preset = "preset.example.json"
+sequence = "sequence.json"
+fps = 60
+rpm = 340
+pixels = 156
+unit_id = 1
+unit_count = 9
+
+# To output all nine units from one backend, replace ip/universe above with
+# one [[artnet.targets]] entry per unit (see backend/README.md).
+
+# Add the actual installation coordinates to enable Open-Meteo weather control.
+# [weather]
+# latitude = 25.0330
+# longitude = 121.5654
+# interval_minutes = 15
+# cloud_step = 6
+# palette = "palette.json"  # 天氣色盤；可在 /palette.html 編輯，不存在時用內建三段
+#
+# Optional hourly visits: each hour, after the current round ends, play one round
+# with the next location's weather, then return to local weather.
+# [[weather.visits]]
+# name = "東京"
+# latitude = 35.6762
+# longitude = 139.6503

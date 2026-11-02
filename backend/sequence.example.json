@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "ending": { "kind": "hold" },
+  "steps": [
+    {
+      "id": 1,
+      "preset": {
+        "schemaVersion": 2,
+        "effectId": "center-out-sine",
+        "parameters": {
+          "speedHz": 0.35
+        },
+        "color": {
+          "mode": "gradient",
+          "axis": "radius",
+          "colors": [
+            {
+              "r": 0.2,
+              "g": 0.92,
+              "b": 1
+            },
+            {
+              "r": 0.66,
+              "g": 0.28,
+              "b": 1
+            }
+          ]
+        }
+      },
+      "playback": {
+        "kind": "count",
+        "count": 1
+      },
+      "transition": {
+        "kind": "crossfade",
+        "seconds": 0.5
+      }
+    },
+    {
+      "id": 2,
+      "preset": {
+        "schemaVersion": 2,
+        "effectId": "sequential-center-fill",
+        "parameters": {
+          "expansionSeconds": 2.5,
+          "holdSeconds": 0.4
+        },
+        "color": {
+          "mode": "solid",
+          "color": {
+            "r": 1,
+            "g": 1,
+            "b": 1
+          }
+        }
+      },
+      "playback": {
+        "kind": "count",
+        "count": 1
+      },
+      "transition": {
+        "kind": "cut",
+        "seconds": 0.5
+      }
+    }
+  ]
+}
