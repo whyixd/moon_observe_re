@@ -13,6 +13,7 @@ from moon_observe_backend.output import stream
 from moon_observe_backend.renderer import render_frame, rgb_bytes
 from moon_observe_backend.sequence import compile_sequence, render_sequence_frame
 from moon_observe_backend.weather import WeatherStore, category_for, gradient_for
+from support import reference_config
 
 
 class FakeClient:
@@ -139,10 +140,7 @@ class WeatherTests(unittest.TestCase):
                 9, fetch=lambda *_args: {"weather_code": 3, "temperature_2m": 24},
             )
             weather.refresh()
-            config = {
-                "ip": "127.0.0.1", "universe": 0, "source_ip": None,
-                "fps": 40, "rpm": 360, "pixels": 156, "unit_id": 1, "unit_count": 9,
-            }
+            config = reference_config()
 
             def call(server, method, body=None):
                 data = None if body is None else json.dumps(body).encode("utf-8")
@@ -188,10 +186,7 @@ class WeatherTests(unittest.TestCase):
                 9, fetch=lambda *_args: {"weather_code": 3, "temperature_2m": 24},
             )
             weather.refresh()
-            config = {
-                "ip": "127.0.0.1", "universe": 0, "source_ip": None,
-                "fps": 40, "rpm": 360, "pixels": 156, "unit_id": 1, "unit_count": 9,
-            }
+            config = reference_config()
             with make_server(store, config, 0, weather_store=weather) as server:
                 worker = Thread(target=server.serve_forever, daemon=True)
                 worker.start()
@@ -223,14 +218,10 @@ class WeatherTests(unittest.TestCase):
                 load_config(config_path)
 
     def test_shared_frame_clear_cloudy_and_rain_lines(self):
-        config = {
-            "ip": "192.0.2.1", "universe": 0, "source_ip": None,
-            "fps": 40, "rpm": 360, "pixels": 156, "unit_id": 1, "unit_count": 9,
-            "targets": [
-                {"unit_id": unit_id, "ip": f"192.0.2.{unit_id}", "universe": unit_id - 1}
-                for unit_id in range(1, 10)
-            ],
-        }
+        config = reference_config(targets=[
+            {"unit_id": unit_id, "ip": f"192.0.2.{unit_id}", "universes": [unit_id - 1]}
+            for unit_id in range(1, 10)
+        ])
         preset = validate_preset(default_preset("center-out-sine"))
         weather = {
             "category": "clear", "generation": 1, "frameStep": 0,
@@ -249,8 +240,12 @@ class WeatherTests(unittest.TestCase):
                 weather_provider=lambda: state, clock=lambda: now[0],
                 sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
             )
-            self.assertEqual(count, sum(len(client.packets) for client in clients))
+            # 每個 client 最後多兩包全 0（結束流程）。 / Each client ends with two all-zero exit frames.
+            self.assertEqual(count + 2 * len(clients), sum(len(client.packets) for client in clients))
+            self.assertTrue(all(client.packets[-2:] == [bytes(512)] * 2 for client in clients))
             self.assertTrue(all(client.closed for client in clients))
+            for client in clients:
+                del client.packets[-2:]
             return clients
 
         clear = run(weather, 0.01)

@@ -10,11 +10,9 @@ from moon_observe_backend.effects import completion_frames, default_preset, vali
 from moon_observe_backend.output import stream
 from moon_observe_backend.playback import PlaybackMonitor
 from moon_observe_backend.sequence import compile_sequence, sequence_position
+from support import reference_config
 
-CONFIG = {
-    "ip": "127.0.0.1", "source_ip": None, "universe": 0,
-    "fps": 40, "rpm": 360, "pixels": 156, "unit_id": 1, "unit_count": 9,
-}
+CONFIG = reference_config()
 
 
 def document():

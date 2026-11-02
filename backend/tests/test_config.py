@@ -45,7 +45,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(DEFAULT_HARDWARE, config["hardware"])
         self.assertEqual(DEFAULT_MOTOR, config["motor"])
         self.assertEqual((152, 5), (config["pixels"], config["unit_count"]))
-        self.assertEqual([{"unit_id": 1, "ip": "2.0.0.101", "universes": [0], "universe": 0}], config["targets"])
+        self.assertEqual([{"unit_id": 1, "ip": "2.0.0.101", "universes": [0]}], config["targets"])
 
     def test_partial_sections_override_single_fields(self):
         config = self.load(

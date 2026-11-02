@@ -9,12 +9,10 @@ from urllib.request import Request, urlopen
 from moon_observe_backend.control import PresetStore, make_server
 from moon_observe_backend.effects import default_preset
 from moon_observe_backend.output import stream
+from support import reference_config
 
 
-CONFIG = {
-    "ip": "127.0.0.1", "source_ip": None, "universe": 0,
-    "fps": 40, "rpm": 360, "pixels": 156, "unit_id": 1, "unit_count": 9,
-}
+CONFIG = reference_config()
 
 
 class FakeClient:

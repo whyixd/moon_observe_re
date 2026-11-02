@@ -63,7 +63,7 @@ class UnitColorTests(unittest.TestCase):
         self.assertIsNone(store.current())
 
     def test_stream_fills_tested_units_and_keeps_motor(self):
-        targets = [{"unit_id": unit_id, "ip": "127.0.0.1", "universe": unit_id - 1} for unit_id in (1, 2)]
+        targets = [{"unit_id": unit_id, "ip": "127.0.0.1", "universes": [unit_id - 1]} for unit_id in (1, 2)]
         config = {**CONFIG, "targets": targets}
         clients = []
 
@@ -79,13 +79,13 @@ class UnitColorTests(unittest.TestCase):
         store = UnitColorStore(9)
         store.apply({"colors": colors({"r": 1, "g": 0.5, "b": 0}), "seconds": None})
         stream(config, validate_preset(default_preset("center-out-sine"), 156), seconds=0.05, client_factory=factory,
-               motor_provider=lambda: 255, unit_colors_provider=store.current,
+               motor_provider=lambda: [("max", "ccw")] * 9, unit_colors_provider=store.current,
                clock=lambda: now[0], sleep=sleep)
         tested, normal = clients[0].packets[0], clients[1].packets[0]
         self.assertEqual(bytes([255, 128, 0]) * 156, tested[:156 * 3])
-        self.assertEqual(255, tested[468])
+        self.assertEqual((230, 255), tuple(tested[468:470]))  # motor channels 469/470 in the test layout
         self.assertNotEqual(bytes([255, 128, 0]) * 156, normal[:156 * 3])
-        self.assertEqual(255, normal[468])
+        self.assertEqual((230, 255), tuple(normal[468:470]))
 
     def test_api(self):
         with tempfile.TemporaryDirectory() as directory:

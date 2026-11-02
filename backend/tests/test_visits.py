@@ -13,11 +13,9 @@ from moon_observe_backend.effects import completion_frames, default_preset, vali
 from moon_observe_backend.output import boundary_key, round_length, stream
 from moon_observe_backend.sequence import compile_sequence
 from moon_observe_backend.weather import WeatherStore, gradient_for
+from support import reference_config
 
-CONFIG = {
-    "ip": "127.0.0.1", "source_ip": None, "universe": 0,
-    "fps": 40, "rpm": 360, "pixels": 156, "unit_id": 1, "unit_count": 9,
-}
+CONFIG = reference_config()
 VISITS = [
     {"name": "東京", "latitude": 35.7, "longitude": 139.7},
     {"name": "倫敦", "latitude": 51.5, "longitude": -0.1},

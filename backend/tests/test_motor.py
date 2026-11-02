@@ -12,11 +12,9 @@ from moon_observe_backend.control import PresetStore, make_server
 from moon_observe_backend.effects import default_preset, validate_preset
 from moon_observe_backend.motor import HardwareStore, MotorStore
 from moon_observe_backend.playback import PlaybackMonitor
+from support import longn_config
 
-CONFIG = {
-    "ip": "2.0.0.101", "source_ip": None, "universe": 0,
-    "fps": 40, "rpm": 500, "pixels": 152, "unit_id": 1, "unit_count": 5,
-}
+CONFIG = longn_config()
 STOPPED = [("stop", "cw")] * 5
 
 

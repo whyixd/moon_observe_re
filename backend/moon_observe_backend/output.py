@@ -1,4 +1,4 @@
-"""Continuous effect output through stupidArtnet, without WLED control."""
+"""Continuous effect output through stupidArtnet in the LongN frame layout (LEDs + motor per unit)."""
 
 from __future__ import annotations
 
@@ -18,17 +18,15 @@ from .config import load_config
 from .control import PresetStore, make_server
 from .motor import HardwareStore, MotorStore
 from .effects import Rgb, completion_frames
-from .renderer import render_frame, rgb_bytes
+from .hardware import PACKET_SIZE, blackout_payload, build_payload
+from .renderer import render_frame
 from .sequence import SequenceStore, render_sequence_frame
 from .palette import PaletteStore
 from .playback import PlaybackMonitor
 from .unit_colors import UnitColorStore
 from .weather import WeatherStore
 
-# 參考系統的舊格式（ch469 = 0/255），M5 改成 hardware.build_payload 的 512 bytes。
-# Reference-system frame (ch469 = 0/255); M5 replaces it with hardware.build_payload.
-MOTOR_CHANNEL = 469  # Art-Net/DMX channels are numbered from 1.
-ARTNET_PACKET_SIZE = MOTOR_CHANNEL + 1  # ArtDmx and stupidArtnet require an even length.
+EXIT_BLACKOUT_REPEATS = 2  # LongN sent the all-zero frame twice on exit (LEDs off, motor stop).
 SINGLE_ROUND_SECONDS = 60  # A single effect "round" for weather visits: at least this long.
 
 
@@ -64,7 +62,8 @@ def stream(
     seconds: float | None = None,
     client_factory: Callable[..., Any] = StupidArtnet,
     preset_provider: Callable[[], Mapping[str, Any]] | None = None,
-    motor_provider: Callable[[], int] | None = None,
+    motor_provider: Callable[[], Sequence[tuple[str, str]]] | None = None,
+    moon_correction_provider: Callable[[], bool] | None = None,
     sequence_provider: Callable[[], tuple[str, tuple[dict[str, Any], ...], int]] | None = None,
     weather_provider: Callable[[], Mapping[str, Any]] | None = None,
     playback_reporter: Callable[[str, Any, int, int], None] | None = None,
@@ -73,16 +72,21 @@ def stream(
     clock: Callable[[], float] = time.perf_counter,
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
-    """Send frames continuously; returned count is send calls, not delivery ACKs."""
+    """Send frames continuously; returned count is send calls, not delivery ACKs.
+
+    Every unit gets one 512-byte frame per output frame (``hardware.build_payload``), sent unchanged to
+    each of its universes. ``motor_provider`` returns (speed, direction) per unit (index = unit_id - 1);
+    without it every motor stays stopped. On exit every universe gets the all-zero frame twice.
+    """
     if seconds is not None and (not math.isfinite(seconds) or seconds <= 0):
         raise ValueError("seconds must be positive and finite")
     fps = config["fps"]
-    targets = config.get("targets") or [{
-        "unit_id": config["unit_id"], "ip": config["ip"], "universe": config["universe"],
-    }]
+    unit_count = config["unit_count"]
+    hardware, motor = config["hardware"], config["motor"]
     clients: list[tuple[Mapping[str, Any], Any]] = []
-    last_payloads: dict[int, bytearray] = {}
-    last_motor_value = 0
+    # 每台的虛擬轉角依各自目前的 rpm 累加；停止時不動。沒有回授，只是估計。
+    # Each unit's virtual rotor angle advances at its own current rpm and holds while stopped (an estimate, no feedback).
+    phases = [0.0] * unit_count
     last_sequence_generation: int | None = None
     last_weather_generation: int | None = None
     playback_start_frame = 0
@@ -90,16 +94,16 @@ def stream(
     last_frame: int | None = None
     last_boundary: tuple[int, int] | None = None
     try:
-        for target in targets:
-            universe = target["universe"]
-            client = client_factory(
-                target["ip"], universe & 0x0F, ARTNET_PACKET_SIZE, fps=fps,
-                source_address=(config["source_ip"], 0) if config["source_ip"] else None,
-            )
-            clients.append((target, client))
-            client.set_simplified(False)
-            client.set_net(universe >> 8)
-            client.set_subnet((universe >> 4) & 0x0F)
+        for target in config["targets"]:
+            for universe in target["universes"]:
+                client = client_factory(
+                    target["ip"], universe & 0x0F, PACKET_SIZE, fps=fps,
+                    source_address=(config["source_ip"], 0) if config["source_ip"] else None,
+                )
+                clients.append((target, client))
+                client.set_simplified(False)
+                client.set_net(universe >> 8)
+                client.set_subnet((universe >> 4) & 0x0F)
         start = clock()
         frame = 0
         sent = 0
@@ -139,26 +143,37 @@ def stream(
                 last_weather_generation = weather_generation
             restarts += restarted
             playback_frame = frame - playback_start_frame
+            motors = tuple(motor_provider()) if motor_provider is not None else (("stop", "cw"),) * unit_count
+            if len(motors) != unit_count:
+                raise ValueError("motor_provider must return one (speed, direction) per unit")
+            if last_frame is not None:
+                for index, (speed, direction) in enumerate(motors):
+                    rpm = 0 if speed == "stop" else motor["rpm"][speed] * (1 if direction == "cw" else -1)
+                    phases[index] += (frame - last_frame) * math.tau * (rpm / 60) / fps
             last_frame = frame
             last_boundary = boundary_key(schedule, active_preset, playback_frame, fps, config["unit_count"])
-            motor_value = motor_provider() if motor_provider is not None else 0
-            if motor_value not in (0, 255):
-                raise ValueError("motor value must be 0 or 255")
-            last_motor_value = motor_value
+            moon_correction = (moon_correction_provider() if moon_correction_provider is not None
+                               else hardware["moon_correction"])
             if playback_reporter is not None:
                 playback_reporter(*(("sequence", sequence_state[1]) if sequence_mode else ("single", active_preset)),
                                   restarts, playback_frame)
             # 測試單色時，被指定的燈台整條填色；底下的播放照常前進。
             # A unit colour test fills the chosen units; playback underneath keeps advancing.
             unit_colors = unit_colors_provider() if unit_colors_provider is not None else None
+            payloads: dict[int, bytes] = {}
             for target, client in clients:
                 unit_id = target["unit_id"]
+                if unit_id in payloads:  # 同一台的其他 universe 送同一包。 / Same frame to every universe of a unit.
+                    client.send(payloads[unit_id])
+                    sent += 1
+                    continue
                 test_color = unit_colors[unit_id - 1] if unit_colors is not None and unit_id <= len(unit_colors) else None
                 category = weather.get("category") if weather is not None else None
                 unit = {
                     "unitId": unit_id,
                     "logicalPixelCount": config["pixels"],
                     "frameOffset": (unit_id - 1) * weather["frameStep"] if category == "cloudy" else 0,
+                    "virtualPhaseRadians": phases[unit_id - 1],
                 }
                 color_override = weather.get("color") if category is not None else None
                 if test_color is not None:
@@ -166,33 +181,36 @@ def stream(
                 elif sequence_mode:
                     pixels = render_sequence_frame(
                         sequence_state[1], unit, playback_frame,
-                        unit_count=config["unit_count"], fps=fps, rpm=config["rpm"],
+                        unit_count=unit_count, fps=fps, rpm=0,
                         rain=category == "rain", color_override=color_override,
                     )
                 else:
                     pixels = render_frame(
                         active_preset,
-                        unit, playback_frame, unit_count=config["unit_count"],
-                        fps=fps, rpm=config["rpm"], raining=category == "rain",
+                        unit, playback_frame, unit_count=unit_count,
+                        fps=fps, rpm=0, raining=category == "rain",
                         color_override=color_override,
                     )
-                payload = bytearray(rgb_bytes(pixels))
-                payload.extend(bytes(ARTNET_PACKET_SIZE - len(payload)))
-                payload[MOTOR_CHANNEL - 1] = motor_value
-                client.send(bytes(payload))
-                last_payloads[unit_id] = payload
+                speed, direction = motors[unit_id - 1]
+                payloads[unit_id] = build_payload(
+                    pixels, hardware=hardware, motor=motor, speed=speed, direction=direction,
+                    moon_correction=moon_correction,
+                )
+                client.send(payloads[unit_id])
                 sent += 1
             frame += 1
         return sent
     finally:
-        for target, client in clients:
-            try:
-                if last_motor_value == 255 and target["unit_id"] in last_payloads:
-                    payload = last_payloads[target["unit_id"]]
-                    payload[MOTOR_CHANNEL - 1] = 0
-                    client.send(bytes(payload))
-            finally:
-                client.close()
+        # 結束時每個 universe 送兩次全 0：燈全暗、馬達停。 / On exit: all-zero twice per universe (LEDs off, motor stop).
+        blackout = blackout_payload()
+        for _ in range(EXIT_BLACKOUT_REPEATS):
+            for _, client in clients:
+                try:
+                    client.send(blackout)
+                except OSError:
+                    pass
+        for _, client in clients:
+            client.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -247,7 +265,8 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     print(f"Sending {preset['effectId']} -> {len(config['targets'])} Art-Net target(s) at {config['fps']} FPS. {service_label} listening on {args.api_host}:{args.api_port}. Ctrl+C to stop.", flush=True)
                     sent = stream(config, preset, seconds=args.seconds,
-                                  preset_provider=store.snapshot,
+                                  preset_provider=store.snapshot, motor_provider=motor_store.snapshot,
+                                  moon_correction_provider=hardware_store.moon_correction,
                                   sequence_provider=sequence_store.snapshot,
                                   weather_provider=weather_store.snapshot if weather_store is not None else None,
                                   playback_reporter=playback_monitor.report,

@@ -14,13 +14,11 @@ from moon_observe_backend.sequence import (
     SequenceStore, _layer_details, compile_sequence, render_sequence_frame, sequence_layers, unit_fade_weight,
     validate_sequence,
 )
+from support import reference_config
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "effects_v2.json"
 
-CONFIG = {
-    "ip": "127.0.0.1", "source_ip": None, "universe": 0,
-    "fps": 40, "rpm": 360, "pixels": 156, "unit_id": 1, "unit_count": 9,
-}
+CONFIG = reference_config()
 UNIT = {"unitId": 1, "logicalPixelCount": 156, "frameOffset": 0}
 
 

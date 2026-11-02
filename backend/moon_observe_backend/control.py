@@ -57,10 +57,11 @@ class PresetStore:
             "revision": self.revision,
             "preset": self.raw,
             "output": {
-                "ip": config["ip"], "universe": config["universe"],
                 "fps": config["fps"], "rpm": config["rpm"],
-                "unitId": config["unit_id"], "unitCount": config["unit_count"],
-                "targets": config.get("targets", [{"unit_id": config["unit_id"], "ip": config["ip"], "universe": config["universe"]}]),
+                "pixels": config["pixels"], "unitCount": config["unit_count"],
+                "sourceIp": config["source_ip"],
+                "targets": [{"unitId": target["unit_id"], "ip": target["ip"], "universes": list(target["universes"])}
+                            for target in config["targets"]],
             },
         }
 

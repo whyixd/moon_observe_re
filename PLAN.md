@@ -111,7 +111,7 @@ rpm = { mid = 130, max = 500 }   # max 為使用者提供；mid 依 60/230 比�
 實作時定下的細節（M2）：
 - `[render].rpm` 已移除，寫了會報 unknown field。rpm 改放 `[motor].rpm`；`config["rpm"]` 暫時等於 `rpm.max`，供現有的相位估計和前端讀取，M5／M6 再改成每台各自的轉速。
 - `[hardware]`、`[motor]` 整段或個別欄位都可以省略，省略時用 LongN 的預設值；`render.pixels` 預設 152、`unit_count` 預設 5。
-- target 的 `universe` 和 `universes` 必須寫其中一個，不能同時寫；每個 target 的 dict 會另外帶一個 `universe`（等於第一個 universe），給還沒改成多 universe 的程式使用，M5 改完 `output.py` 後就移除。
+- target 的 `universe` 和 `universes` 必須寫其中一個，不能同時寫；載入後一律只有 `universes`（M5 已移除相容用的 `universe`，config 頂層的 `ip`／`universe`／`unit_id` 也一併移除）。
 
 驗證規則照參考系統的嚴格程度：
 - 有多餘欄位就報錯。
@@ -133,7 +133,15 @@ rpm = { mid = 130, max = 500 }   # max 為使用者提供；mid 依 60/230 比�
 - `/api/motor` 至少要給 `speed` 或 `direction` 其中一個，沒給的欄位維持原值；`unitIds` 必須是不重複的 1..`unit_count` 整數。舊的 `{"enabled": bool}` 會回 422。上限 256 bytes，`/api/hardware` 上限 64 bytes。
 - `/api/motor`、`/api/hardware`、`/api/preset` 都回傳完整的 `/api/state`。`state.motor` 另外有自己的 `revision`、`levels.rpm`，每台多一個 `rpm`（stop 為 0）；`state.hardware` 多一個 `moonCorrectionDefault`。頂層的 `revision` 現在只計算 preset 的變更。
 - `/api/playback` 在 `active` 時附上 `motor: [{speed, direction}, …]`（依 unitId 排列）。
-- M3 到 M5 之間：`output.py` 仍送參考系統的 470 bytes 舊格式，馬達指令不會送出（ch457／458 是 0）；前端的馬達按鈕還是送舊格式，會收到 422，M6 改。
+- 前端的馬達按鈕還是送舊格式，會收到 422，M6 改。
+
+實作時定下的細節（M5）：
+- `output.py` 每個 (target, universe) 開一個 StupidArtnet client，封包 512 bytes；同一台的每個 universe 送同一包（`hardware.build_payload`）。
+- 每格讀一次 `MotorStore.snapshot()` 和 `HardwareStore.moon_correction()`，API 的變更從下一格生效。
+- 相位估計改成每台各自累加：依該台目前速度的 rpm（stop 為 0，ccw 為負）每格前進，所以停止的台相位不動，只有 `world-upper-half` 會用到。`config["rpm"]`（= `rpm.max`）只剩 API 狀態還在回報，M6 前端改完後再決定是否移除。
+- 結束流程：不論正常結束、Ctrl+C 或例外，每個 universe 都送兩次全 0（燈全暗、馬達停），然後關閉 client。
+- `/api/state` 的 `output` 改成 `{fps, rpm, pixels, unitCount, sourceIp, targets:[{unitId, ip, universes}]}`；前端連線狀態那行還在讀舊的 `ip`／`universe`，M6 改。
+- 測試共用的設定放在 `tests/support.py`：`reference_config()` 是參考系統的 156 顆 × 9 台（RGB、全亮、無月亮校正、馬達移到 ch469／470，所以像素位元組和原本的測試一樣），`longn_config()` 是 LongN 現場設定。
 
 ## 4. 前端修改
 
@@ -201,7 +209,7 @@ Windows 10 相容性：
 | M2 ✅ | `config.py` + `hardware.py` + golden test | payload 的 channel 排列逐 byte 符合 `Artnet.pde`；月亮校正數值符合 1.3 節（2026-11-02：brightness 1.0 時與 LongN 移植版逐 byte 相同；brightness 0.4 加月亮校正時每個 channel 只會比 LongN 亮 0 或 1，因為 LongN 是先四捨五入再整數截斷，這裡是浮點數運算後只捨入一次；backend 共 102 個測試通過） |
 | M3 ✅ | `motor.py` + `/api/motor` + `/api/hardware` | API 測試：422/415/413 規則、只存在記憶體、重啟後一律 stop（2026-11-02：新增 `test_motor.py` 14 個測試，backend 共 116 個測試通過；實際啟動 `--api-only` 用 curl 測過 state／motor／hardware） |
 | M4 ✅ | effects 改為 152 顆 + 重新產生測試資料 | 所有效果在 152 / 156 顆下前後端都一致（2026-11-02：見下方 M4 細節；前端 118、backend 124 個測試通過） |
-| M5 | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0 |
+| M5 ✅ | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0（2026-11-03：`test_send.py` 用真的 StupidArtnet 對本機 listener 收到 5 格 × 2 universe = 10 包，接著每個 universe 兩包全 0；另外實際啟動 `run.py`，用 API 切換馬達與月亮校正、Ctrl+C 結束，封包內容都正確；backend 共 127 個測試通過） |
 | M6 | 前端 | `npm test`、`tsc` 通過；用 Playwright 截圖確認 5 台的畫面和馬達 UI |
 | M7 | Windows 部署腳本 | 在 Windows 機器上完成：安裝 → 升級 → 回退 → 停止時馬達確實停下 |
 | M8 | 文件 | 改寫 `system-reference.md`、backend 與 deploy 的 README |

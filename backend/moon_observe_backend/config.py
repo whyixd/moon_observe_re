@@ -159,9 +159,6 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
     pairs = [(target["ip"], universe) for target in targets for universe in target["universes"]]
     if len(set(pairs)) != len(pairs):
         raise ValueError("artnet target IP/universe pairs must be unique")
-    for target in targets:
-        # 第一個 universe 供尚未改成多 universe 的程式（API 狀態）使用。 / First universe for single-universe readers.
-        target["universe"] = target["universes"][0]
 
     weather = None
     if "weather" in raw:
@@ -203,9 +200,7 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
     with preset_path.open("r", encoding="utf-8") as stream:
         preset = validate_preset(json.load(stream), pixels)
     config = {
-        "ip": targets[0]["ip"],
         "source_ip": source_ip,
-        "universe": targets[0]["universe"],
         "targets": targets,
         "weather": weather,
         "fps": fps,
@@ -214,7 +209,6 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
         "pixels": pixels,
         "hardware": hardware,
         "motor": motor,
-        "unit_id": targets[0]["unit_id"],
         "unit_count": unit_count,
         "preset_path": str(preset_path),
         "sequence_path": str(sequence_path),
