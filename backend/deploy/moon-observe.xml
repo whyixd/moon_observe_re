@@ -1,0 +1,31 @@
+<!--
+  WinSW 2.12 service template. install-release.ps1 fills in the install root, data root and port placeholders and writes
+  the result next to the WinSW executable as <InstallRoot>\service\MoonObserve.xml.
+  The service account (NT AUTHORITY\LocalService) and the delayed automatic start are set by
+  install-release.ps1 with Win32_Service.Change and sc.exe, not here.
+-->
+<service>
+  <id>MoonObserve</id>
+  <name>Moon Observe</name>
+  <description>Moon Observe Art-Net output (LongN LEDs and motors) and the control page on TCP @PORT@.</description>
+  <!-- One process serves Art-Net output, the API and the built frontend. -->
+  <executable>@INSTALL_ROOT@\current\.venv\Scripts\python.exe</executable>
+  <arguments>-B run.py --config "@DATA_ROOT@\config.toml" --frontend-dir "@INSTALL_ROOT@\current\frontend" --api-port @PORT@</arguments>
+  <workingdirectory>@INSTALL_ROOT@\current</workingdirectory>
+  <startmode>Automatic</startmode>
+  <!-- Stop sends Ctrl+C: the backend turns it into KeyboardInterrupt and sends the all-zero frame twice
+       (LEDs off, motors stop) before exiting. After stoptimeout WinSW kills the process. -->
+  <stoptimeout>15 sec</stoptimeout>
+  <onfailure action="restart" delay="5 sec"/>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <logpath>@DATA_ROOT@\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+  <env name="PYTHONUNBUFFERED" value="1"/>
+  <env name="PYTHONDONTWRITEBYTECODE" value="1"/>
+  <env name="PYTHONUTF8" value="1"/>
+</service>

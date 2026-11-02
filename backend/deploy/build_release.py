@@ -1,17 +1,16 @@
-"""Build the minimal Raspberry Pi release artifact (backend + built frontend) from a Git tag.
+"""Build the Windows release artifact (backend + built frontend + WinSW) from a Git tag.
 
-The archive is assembled from the tagged commit (not the working tree), so it is
-reproducible from the tag alone. The frontend is built with `npm ci` and
-`npm run build` from the tagged frontend/ sources and shipped under frontend/.
-Usage, from the repository root:
+The zip is assembled from the tagged commit (not the working tree), so it is reproducible from the
+tag alone. The frontend is built with `npm ci` and `npm run build` from the tagged frontend/ sources
+and shipped under frontend/. WinSW (the service wrapper) is downloaded once, pinned by SHA-256 and
+shipped as deploy/winsw/WinSW.exe. Usage, from the repository root:
 
-    python backend/deploy/build_release.py v0.1.0
+    python backend/deploy/build_release.py v0.2.0
 """
 
 from __future__ import annotations
 
 import argparse
-import gzip
 import hashlib
 import io
 from pathlib import Path
@@ -21,10 +20,13 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from typing import Callable
+import urllib.request
+import zipfile
 
-APP = "moon-observe-backend"
-# Keep identical to VERSION_PATTERN in bootstrap.sh and install-release.sh.
+APP = "moon-observe"
+# Keep identical to $VersionPattern in bootstrap.ps1 and install-release.ps1.
 VERSION_PATTERN = r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.]*)?$"
 # Paths relative to backend/ that make up the runtime. Everything else stays out.
 RUNTIME_FILES = (
@@ -34,12 +36,20 @@ RUNTIME_FILES = (
     "run.py",
     "config.example.toml",
     "preset.example.json",
-    "deploy/bootstrap.sh",
-    "deploy/install-release.sh",
-    "deploy/moon-observe.service",
+    "deploy/bootstrap.ps1",
+    "deploy/install-release.ps1",
+    "deploy/uninstall.ps1",
+    "deploy/moon-observe.xml",
 )
 RUNTIME_DIRS = ("moon_observe_backend",)
-LF_ONLY_SUFFIXES = (".sh", ".service")
+# Windows PowerShell 5.1 reads BOM-less scripts in the ANSI code page, so scripts must be plain ASCII.
+ASCII_ONLY_SUFFIXES = (".ps1",)
+# WinSW 2.12.0 for .NET Framework 4.6.1 (Windows 10 ships 4.8). GitHub publishes no digest; this one
+# was taken from the release asset on 2026-11-03 and pins every later download.
+WINSW_URL = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET461.exe"
+WINSW_SHA256 = "b5066b7bbdfba1293e5d15cda3caaea88fbeab35bd5b38c41c913d492aadfc4f"
+WINSW_PATH = "deploy/winsw/WinSW.exe"
+ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)  # the earliest timestamp a zip entry can hold
 
 
 def validate_version(version: str) -> str:
@@ -81,18 +91,33 @@ def build_frontend(repo: Path, version: str) -> dict[str, bytes]:
                 for path in sorted(dist.rglob("*")) if path.is_file()}
 
 
+def fetch_winsw(cache_dir: Path) -> bytes:
+    """WinSW from the local cache, downloading it once; the pinned digest is checked by build()."""
+    cached = cache_dir / Path(WINSW_URL).name
+    if not cached.is_file() or hashlib.sha256(cached.read_bytes()).hexdigest() != WINSW_SHA256:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(WINSW_URL, timeout=60) as response:
+            cached.write_bytes(response.read())
+    return cached.read_bytes()
+
+
+def _zip_time(stamp: int) -> tuple[int, int, int, int, int, int]:
+    return max(ZIP_EPOCH, tuple(time.gmtime(stamp)[:6]))
+
+
 def build(repo: Path, version: str, out_dir: Path, force: bool = False,
-          frontend_builder: Callable[[Path, str], dict[str, bytes]] = build_frontend) -> tuple[Path, Path]:
-    """Write <APP>-<version>.tar.gz and SHA256SUMS into out_dir; return both paths."""
+          frontend_builder: Callable[[Path, str], dict[str, bytes]] = build_frontend,
+          winsw: bytes | None = None, winsw_sha256: str = WINSW_SHA256) -> tuple[Path, Path]:
+    """Write <APP>-<version>-windows.zip and SHA256SUMS into out_dir; return both paths."""
     validate_version(version)
     _git(repo, "rev-parse", "--verify", "--quiet", f"refs/tags/{version}^{{commit}}")
     top = f"{APP}-{version}"
-    archive_path = out_dir / f"{top}.tar.gz"
+    archive_path = out_dir / f"{top}-windows.zip"
     if archive_path.exists() and not force:
         raise FileExistsError(f"{archive_path} already exists; pass --force to rebuild")
 
     pathspecs = [f"backend/{path}" for path in (*RUNTIME_FILES, *RUNTIME_DIRS)]
-    # autocrlf=false exports blobs exactly as committed, so shell scripts keep LF on Windows.
+    # autocrlf=false exports blobs exactly as committed.
     raw = _git(repo, "-c", "core.autocrlf=false", "archive", "--format=tar", version, "--", *pathspecs)
 
     files: dict[str, tuple[bytes, int]] = {}
@@ -104,8 +129,8 @@ def build(repo: Path, version: str, out_dir: Path, force: bool = False,
             if _excluded(relative):
                 continue
             data = source.extractfile(member).read()
-            if relative.endswith(LF_ONLY_SUFFIXES) and b"\r" in data:
-                raise ValueError(f"{relative} contains CR line endings")
+            if relative.endswith(ASCII_ONLY_SUFFIXES) and not data.isascii():
+                raise ValueError(f"{relative} must be plain ASCII (Windows PowerShell 5.1 reads it as ANSI)")
             files[relative] = (data, member.mtime)
     missing = [path for path in RUNTIME_FILES if path not in files]
     missing += [path for path in RUNTIME_DIRS if not any(name.startswith(f"{path}/") for name in files)]
@@ -118,24 +143,22 @@ def build(repo: Path, version: str, out_dir: Path, force: bool = False,
         raise FileNotFoundError("frontend build produced no index.html")
     for relative, data in frontend.items():
         files[f"frontend/{relative}"] = (data, mtime)
+    winsw = fetch_winsw(repo / "dist" / ".cache") if winsw is None else winsw
+    if hashlib.sha256(winsw).hexdigest() != winsw_sha256:
+        raise ValueError(f"WinSW does not match the pinned SHA-256 {winsw_sha256}")
+    files[WINSW_PATH] = (winsw, mtime)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    directories = {top} | {f"{top}/{'/'.join(name.split('/')[:depth])}"
-                           for name in files for depth in range(1, name.count("/") + 1)}
     buffer = io.BytesIO()
-    # Fixed gzip mtime, ownership and member order keep rebuilds of a tag byte-identical.
-    with gzip.GzipFile(filename="", mode="wb", fileobj=buffer, mtime=0) as compressed:
-        with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as target:
-            for name in sorted(directories):
-                info = tarfile.TarInfo(name)
-                info.type, info.mode, info.mtime = tarfile.DIRTYPE, 0o755, mtime
-                target.addfile(info)
-            for relative in sorted(files):
-                data, stamp = files[relative]
-                info = tarfile.TarInfo(f"{top}/{relative}")
-                info.size, info.mtime = len(data), stamp
-                info.mode = 0o755 if relative.endswith(".sh") else 0o644
-                target.addfile(info, io.BytesIO(data))
+    # Fixed timestamps, attributes and member order keep rebuilds of a tag byte-identical.
+    with zipfile.ZipFile(buffer, "w") as target:
+        for relative in sorted(files):
+            data, stamp = files[relative]
+            info = zipfile.ZipInfo(f"{top}/{relative}", date_time=_zip_time(stamp))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 0
+            info.external_attr = 0
+            target.writestr(info, data, compresslevel=9)
     archive_path.write_bytes(buffer.getvalue())
     digest = hashlib.sha256(buffer.getvalue()).hexdigest()
     sums_path = out_dir / "SHA256SUMS"
@@ -144,8 +167,8 @@ def build(repo: Path, version: str, out_dir: Path, force: bool = False,
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build the Raspberry Pi release artifact (backend + frontend)")
-    parser.add_argument("version", help="Existing Git tag, e.g. v0.1.0")
+    parser = argparse.ArgumentParser(description="Build the Windows release artifact (backend + frontend + WinSW)")
+    parser.add_argument("version", help="Existing Git tag, e.g. v0.2.0")
     parser.add_argument("--out", type=Path, help="Output directory (default: <repo>/dist)")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing archive")
     args = parser.parse_args(argv)

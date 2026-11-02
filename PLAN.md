@@ -31,7 +31,7 @@
 - 每台把同一份 512 bytes 同時送到 universe 0 和 universe 1（控制盒的 U0 走 DMX → 馬達，U1 走 SPI → LED）。
 - 每台 152 顆：index 0 是一腳，75/76 是頂點，151 是另一腳（從 `TransLight.pde` 推斷，**需要現場確認**）。
 - 色序 GRB，`brightness` 預設 0.4。
-- LongN 的 `IP.ini`（`2.20.18.9`）推測是主機自己 Art-Net 網卡的 IP，可以填在 `artnet.source_ip`。
+- LongN 的 `IP.ini` 是 `2.20.18.9`，但現場電腦的 Ethernet 實際設定是 `2.0.0.99/24`（2026-11-03 透過 SSH 確認），`artnet.source_ip` 用 `2.0.0.99`。
 
 ### 1.2 Payload（每台 512 bytes）
 
@@ -78,7 +78,7 @@ moon_observe_re/
 
 ```toml
 [artnet]
-source_ip = "2.20.18.9"          # 選填：綁定 Art-Net 網卡
+source_ip = "2.0.0.99"           # 選填：綁定 Art-Net 網卡（現場電腦的 Ethernet）
 
 [[artnet.targets]]
 unit_id = 1
@@ -168,7 +168,7 @@ rpm = { mid = 130, max = 500 }   # max 為使用者提供；mid 依 60/230 比�
 - `world-upper-half` 的相位估計改用輸出影格起點的轉角加上未知相位，和後端 M5 每台累加的做法一致。
 - 月亮校正在模擬器也套用（`src/hardware.ts`，數值與後端相同、有測試），只在該台全速且開關打開時生效；亮度 40% 不模擬。
 - 馬達面板（`MotorPanel`）：「全部」一列加每台一列〔停｜中速｜全速〕〔順｜逆〕，後端模式顯示實際送出的 DMX 值與 channel，另有月亮校正開關。
-- M7 要注意：在背景（非互動 shell）啟動時 SIGINT 會被忽略，Python 收不到 Ctrl+C、結束時不會送全 0；Windows 服務停止時送的 Ctrl+C 也可能因 process group 收不到，部署時要實測，必要時在 `run.py` 加 SIGBREAK／SIGTERM 處理。
+- M7 要注意：在背景（非互動 shell）啟動時 SIGINT 會被忽略，Python 收不到 Ctrl+C、結束時不會送全 0；Windows 服務停止時送的 Ctrl+C 也可能因 process group 收不到。（M7 已處理，見下方 M7 細節。）
 
 ## 5. Windows 部署（取代 Pi 的 systemd）
 
@@ -201,14 +201,23 @@ Windows 10 相容性：
 - repo 是 public，下載 release **不需要 GitHub token**；`bootstrap.ps1` 保留「選填 token」以備日後改成 private。
 
 網路（Art-Net 走 Ethernet、網際網路走 Wi-Fi）：
-- Ethernet：固定 IP `2.20.18.9/8`（沿用 LongN `IP.ini`），**不設預設閘道**，避免搶走 Wi-Fi 的對外路由；`2.0.0.0/8` 的路由自然走 Ethernet。
-- `config.toml` 設 `artnet.source_ip = "2.20.18.9"`，把 Art-Net 綁在 Ethernet 送出。
+- Ethernet：固定 IP `2.0.0.99/24`（現場電腦原本就這樣設定），**不設預設閘道**，避免搶走 Wi-Fi 的對外路由；`2.0.0.0/24` 的路由自然走 Ethernet。
+- `config.toml` 設 `artnet.source_ip = "2.0.0.99"`，把 Art-Net 綁在 Ethernet 送出；網路線沒插時也不會改走 Wi-Fi 送到公網的 2.0.0.x。
 - Wi-Fi：DHCP，負責天氣（Open-Meteo）、GitHub 下載和校時。
 - 防火牆：允許 TCP 8765 inbound，供同一 Wi-Fi 的裝置開控制頁。沒有閘道的 Ethernet 會被判定為「未識別的網路／公用」，規則只開在 Wi-Fi 所屬的設定檔（Private），避免把 API 暴露到 Art-Net 網段以外。
-- 健康檢查和 README 加入網卡檢查：Ethernet 有 `2.20.18.9`、能 ping 到 `2.0.0.101`–`105`。
+- README 加入網卡檢查：Ethernet 有 `2.0.0.99`、能 ping 到 `2.0.0.101`–`105`。
 - 電源：關閉睡眠和硬碟休眠。
 - Windows Update：設定使用時段。重開機後服務會自動啟動，不需要登入（比 LongN 原本的 `.bat` 加 `.exe` 更穩）。
 - 時區設為 Asia/Taipei（天氣整點造訪會用到）。
+
+實作時定下的細節（M7）：
+- 檔案：`backend/deploy/{bootstrap.ps1, install-release.ps1, uninstall.ps1, moon-observe.xml, build_release.py, README.md}`；Pi 的 `.sh`／`.service` 已刪除。操作步驟與現場驗收清單在 `backend/deploy/README.md`。
+- Artifact：`moon-observe-<版本>-windows.zip`（頂層資料夾 `moon-observe-<版本>/`）+ `SHA256SUMS`；同一個 tag 重建逐 byte 相同。GitHub Release 另外附上 `bootstrap.ps1`。
+- WinSW 用 2.12.0 的 `WinSW.NET461.exe`（Windows 10 內建 .NET 4.8），SHA-256 固定在 `build_release.py`；GitHub 沒有公布官方雜湊，值是 2026-11-03 下載時記下的。uv 固定 0.12.23，雜湊取自官方 `.sha256`，寫死在 `bootstrap.ps1`。
+- 服務帳號用 `Win32_Service.Change` 設成 LocalService、延遲自動啟動用 `sc.exe config start= delayed-auto`，不靠 WinSW 2.x 寫法不一的 XML 欄位。WinSW 放在 `C:\MoonObserve\service\`（每次啟用時從 release 複製），XML 由範本代入路徑與 port。
+- 權限用 well-known SID 設定（不受 Windows 顯示語言影響）：程式資料夾只有 Administrators 可寫；`C:\ProgramData\MoonObserve` 只有 `preset\`、`logs\` 讓 LocalService 寫入；token 檔只有 Administrators。
+- 停止：新增 `moon_observe_backend/stopping.py`，把 SIGINT、SIGTERM、SIGBREAK 都轉成一次 KeyboardInterrupt（第二次起忽略，不會打斷送全 0），繼承來的「忽略 SIGINT」也會被蓋掉；Windows 上另外呼叫 `SetConsoleCtrlHandler(None, False)` 重新打開 Ctrl+C。`tests/test_stopping.py` 實際啟動後端，用 SIGTERM 與「繼承忽略的 SIGINT」停止，確認收到全 0。
+- 驗證（開發機）：`.ps1` 只做靜態測試（ASCII、無 BOM、版本 regex 一致且區分大小寫、沒有 PowerShell 7 語法、`-UseBasicParsing`、範本佔位字串與 XML 格式）；想在 Mac 上下載免安裝 PowerShell 做語法檢查，被權限規則擋下，沒有執行。另在暫存資料夾的臨時 tag 上實際建置 zip、重建比對雜湊，並用解壓後的 release `uv sync` + `run.py --check` 通過。
 
 ## 6. 里程碑與驗證
 
@@ -220,7 +229,7 @@ Windows 10 相容性：
 | M4 ✅ | effects 改為 152 顆 + 重新產生測試資料 | 所有效果在 152 / 156 顆下前後端都一致（2026-11-02：見下方 M4 細節；前端 118、backend 124 個測試通過） |
 | M5 ✅ | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0（2026-11-03：`test_send.py` 用真的 StupidArtnet 對本機 listener 收到 5 格 × 2 universe = 10 包，接著每個 universe 兩包全 0；另外實際啟動 `run.py`，用 API 切換馬達與月亮校正、Ctrl+C 結束，封包內容都正確；backend 共 127 個測試通過） |
 | M6 ✅ | 前端 | `npm test`、`tsc` 通過；用 Playwright 截圖確認 5 台的畫面和馬達 UI（2026-11-03：前端 124、backend 127 個測試通過；用 Playwright 控制本機 Chrome 實際操作模擬模式與後端控制模式，馬達、月亮校正、相機取景都確認過） |
-| M7 | Windows 部署腳本 | 在 Windows 機器上完成：安裝 → 升級 → 回退 → 停止時馬達確實停下 |
+| M7 🟡 | Windows 部署腳本 | 在 Windows 機器上完成：安裝 → 升級 → 回退 → 停止時馬達確實停下（2026-11-03：腳本、artifact 與停止處理完成，backend 138 個測試通過；**Windows 實機驗收尚未進行**，清單見 `backend/deploy/README.md` 第 7 節） |
 | M8 | 文件 | 改寫 `system-reference.md`、backend 與 deploy 的 README |
 
 ## 7. Git 與 repo 內容

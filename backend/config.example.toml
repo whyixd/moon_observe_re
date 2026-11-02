@@ -1,6 +1,7 @@
 [artnet]
-# Optional: bind the Art-Net Ethernet interface (LongN host NIC, see LongN/data/IP.ini).
-# source_ip = "2.20.18.9"
+# Optional but recommended on site: bind Art-Net to the Ethernet NIC (2.0.0.99/24 on the LongN PC).
+# Without it an unplugged cable would route Art-Net to the Wi-Fi gateway (2.0.0.0/8 is public address space).
+# source_ip = "2.0.0.99"
 
 # LongN controller box: U0 drives DMX (motor), U1 drives SPI (pixels); both get the same 512 bytes.
 [[artnet.targets]]

@@ -21,6 +21,7 @@ from .effects import Rgb, completion_frames
 from .hardware import PACKET_SIZE, blackout_payload, build_payload
 from .renderer import render_frame
 from .sequence import SequenceStore, render_sequence_frame
+from .stopping import install_stop_handlers
 from .palette import PaletteStore
 from .playback import PlaybackMonitor
 from .unit_colors import UnitColorStore
@@ -236,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.check:
             print(f"OK: {preset['effectId']} -> {len(config['targets'])} Art-Net target(s)")
             return 0
+        install_stop_handlers()
         store = PresetStore(config["preset_path"], config["pixels"])
         sequence_store = SequenceStore(sequence_path, config["pixels"], config["fps"],
                                        config["unit_count"], store.state(config)["preset"])
