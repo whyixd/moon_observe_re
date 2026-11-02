@@ -3,7 +3,8 @@ import json
 import unittest
 from pathlib import Path
 
-from moon_observe_backend.effects import EffectContext, axis_change_weight, completion_frames, default_preset, preset_for_unit, preset_to_json, sample_effect, unit_palette_position, validate_preset
+from moon_observe_backend.effects import MAX_LED_COUNT, EffectContext, axis_change_weight, completion_frames, default_preset, parameter_max, preset_for_unit, preset_to_json, sample_effect, unit_palette_position, validate_preset
+from moon_observe_backend.hardware import MAX_PIXELS
 from moon_observe_backend.renderer import render_frame, rgb_bytes
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "effects_v2.json"
@@ -405,3 +406,120 @@ class UnitEffectTests(unittest.TestCase):
                                        "to": preset["parameters"][parameter], "distribution": "linear"}
             with self.assertRaises(ValueError, msg=effect_id):
                 validate_preset(preset)
+
+
+class LongNVectorTests(unittest.TestCase):
+    """The same frontend vectors at LongN's 152 LEDs x 5 units (generated from frontend/src/effects)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))["longn"]
+        cls.leds = cls.fixture["ledCount"]
+        cls.units = cls.fixture["unitCount"]
+
+    def test_fixture_is_longn(self):
+        self.assertEqual((152, 5), (self.leds, self.units))
+        self.assertEqual(MAX_LED_COUNT, MAX_PIXELS)
+
+    def test_full_frame_bytes(self):
+        root = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))
+        presets = [validate_preset(preset, self.leds) for preset in root["presets"] + self.fixture["edgePresets"]]
+        self.assertEqual(len(presets) * 12, len(self.fixture["frames"]))
+        center = (self.leds - 1) / 2
+        for case in self.fixture["frames"]:
+            pixels = [
+                sample_effect(presets[case["presetIndex"]], EffectContext(
+                    controller_frame=case["controllerFrame"], controller_fps=40,
+                    led_index=led_index, led_count=self.leds,
+                    unit_index=case["unitIndex"], unit_count=self.units,
+                    global_controller_frame=case["globalFrame"], unit_relative_y=(led_index - center) / center,
+                ))
+                for led_index in range(self.leds)
+            ]
+            self.assertEqual(case["sha256"], hashlib.sha256(rgb_bytes(pixels)).hexdigest(), msg=str(case))
+
+    def test_unit_variation_values_and_cycles(self):
+        self.assertEqual(54, len(self.fixture["unitVariations"]))
+        for case in self.fixture["unitVariations"]:
+            preset = validate_preset(case["preset"], self.leds)
+            self.assertEqual(case["preset"], preset_to_json(preset))
+            key = case["preset"]["unitVariation"]["parameter"]
+            values = [preset_for_unit(preset, unit, self.units)["parameters"][key] for unit in range(self.units)]
+            self.assertEqual(case["values"], values, msg=f"{preset['effectId']} {case['preset']['unitVariation']}")
+            self.assertEqual(case["completionFrames"], completion_frames(preset, 40, self.units))
+
+    def test_unit_effect_hashes(self):
+        self.assertEqual(6, len(self.fixture["unitEffects"]))
+        for case in self.fixture["unitEffects"]:
+            preset = validate_preset(case["preset"], self.leds)
+            self.assertEqual(case["totalFrames"], 2 * completion_frames(preset, 40, self.units))
+            data = bytearray()
+            for frame in range(case["totalFrames"]):
+                for unit_index in range(self.units):
+                    data.extend(rgb_bytes([
+                        sample_effect(preset, EffectContext(frame, 40, led_index, self.leds, unit_index, self.units,
+                                                            global_controller_frame=frame))
+                        for led_index in case["leds"]
+                    ]))
+            self.assertEqual(case["sha256"], hashlib.sha256(bytes(data)).hexdigest(), preset["effectId"])
+
+    def test_rain_lines(self):
+        rain = self.fixture["rainLines"]
+        frames = [frame for start, end in rain["frameRanges"] for frame in range(start, end)]
+        self.assertEqual(20, len(rain["cases"]))
+        for case in rain["cases"]:
+            preset = validate_preset(default_preset(case["effectId"]), self.leds)
+            data = bytearray()
+            for frame in frames:
+                for unit_index in rain["units"]:
+                    data.extend(rgb_bytes([
+                        sample_effect(preset, EffectContext(frame, case["fps"], led_index, self.leds, unit_index,
+                                                            self.units, global_controller_frame=frame), frame, True)
+                        for led_index in range(self.leds)
+                    ]))
+            self.assertEqual(case["sha256"], hashlib.sha256(bytes(data)).hexdigest(), case["effectId"])
+
+
+class LedCountLimitTests(unittest.TestCase):
+    def preset(self, effect_id, **parameters):
+        preset = default_preset(effect_id)
+        preset["parameters"].update(parameters)
+        return preset
+
+    def test_parameter_max_follows_led_count(self):
+        self.assertEqual(152, parameter_max("random-leds", "litCount", 152))
+        self.assertEqual(152, parameter_max("periodic-leds", "litCount", 152))
+        self.assertEqual(151, parameter_max("periodic-leds", "darkGap", 152))
+        self.assertEqual(170, parameter_max("random-leds", "litCount", 999))  # never beyond the manifest max
+        self.assertEqual(1, parameter_max("random-leds", "litCount", 0))  # never below the manifest min
+        self.assertEqual(120, parameter_max("random-leds", "holdFrames", 152))  # unrelated parameters keep theirs
+
+    def test_limits_accept_the_edge_and_reject_one_past_it(self):
+        for effect_id, edge, past in [
+            ("random-leds", {"litCount": 152}, {"litCount": 153}),
+            ("periodic-leds", {"litCount": 1, "darkGap": 151}, {"litCount": 1, "darkGap": 152}),
+            ("periodic-leds", {"litCount": 152, "darkGap": 0}, {"litCount": 153, "darkGap": 0}),
+            ("periodic-leds", {"litCount": 16, "darkGap": 9}, {"litCount": 17, "darkGap": 9}),
+        ]:
+            with self.subTest(effect_id=effect_id, edge=edge):
+                validate_preset(self.preset(effect_id, **edge), 152)
+                with self.assertRaisesRegex(ValueError, "exceed"):
+                    validate_preset(self.preset(effect_id, **past), 152)
+        # 156 顆仍可用到 156，170 顆可用到 170。 / 156 LEDs still allow 156; 170 LEDs allow 170.
+        validate_preset(self.preset("random-leds", litCount=156), 156)
+        validate_preset(self.preset("random-leds", litCount=170), 170)
+        with self.assertRaises(ValueError):
+            validate_preset(self.preset("random-leds", litCount=171), 170)
+
+    def test_unit_variation_is_capped_by_led_count(self):
+        preset = default_preset("random-leds")
+        preset["unitVariation"] = {"parameter": "litCount", "from": 152, "to": 1, "distribution": "linear"}
+        validate_preset(preset, 152)
+        preset["unitVariation"]["from"] = 153
+        with self.assertRaisesRegex(ValueError, "unitVariation.from"):
+            validate_preset(preset, 152)
+        validate_preset(preset, 156)
+        preset = default_preset("periodic-leds")
+        preset["unitVariation"] = {"parameter": "darkGap", "from": 0, "to": 152, "distribution": "linear"}
+        with self.assertRaisesRegex(ValueError, "unitVariation.to"):
+            validate_preset(preset, 152)

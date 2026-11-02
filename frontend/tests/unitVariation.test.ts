@@ -3,6 +3,8 @@ import {
   createDefaultEffectPreset,
   getEffectCompletion,
   getVariableParameters,
+  MAX_LED_COUNT,
+  parameterMax,
   presetForUnit,
   type EffectPreset,
 } from '../src/effects'
@@ -64,5 +66,18 @@ describe('各燈台不同數值', () => {
       { id: 1, preset, playback: { kind: 'count', count: 2 }, transition: { kind: 'cut', seconds: 0 } },
     ], 40, 9)
     expect(sequence.totalFrames).toBe(400)
+  })
+})
+
+describe('parameterMax', () => {
+  it('caps LED-count parameters by the LED count, like backend effects.parameter_max', () => {
+    expect(parameterMax('random-leds', 'litCount', 152)).toBe(152)
+    expect(parameterMax('periodic-leds', 'litCount', 152)).toBe(152)
+    expect(parameterMax('periodic-leds', 'darkGap', 152)).toBe(151)
+    expect(parameterMax('periodic-leds', 'darkGap', 156)).toBe(155)
+    expect(parameterMax('random-leds', 'litCount', 999)).toBe(MAX_LED_COUNT)
+    expect(parameterMax('random-leds', 'litCount', 0)).toBe(1)
+    expect(parameterMax('random-leds', 'holdFrames', 152)).toBe(120)
+    expect(() => parameterMax('random-leds', 'missing', 152)).toThrow()
   })
 })

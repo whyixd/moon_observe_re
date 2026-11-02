@@ -145,6 +145,12 @@ rpm = { mid = 130, max = 500 }   # max 為使用者提供；mid 依 60/230 比�
   - 加上「全部」列，以及月亮校正開關。
 - 「物理」分頁：Motor speed 改成 mid / max 兩個 rpm（連上後端時由後端鎖定）。
 - effects 中依 156 寫死的參數上限（`periodicLeds.ts`、`randomLeds.ts`）改為依 ledCount。
+
+實作時定下的細節（M4）：
+- 參數表上的固定上限改成 170（一個 universe 放得下的燈數），實際上限另外依燈數計算：`litCount` ≤ 燈數，`darkGap` ≤ 燈數 − 1。前端 `parameterMax()`（`effects/index.ts`）和後端 `parameter_max()`（`effects.py`）共用同一張 `LED_COUNT_BOUNDS` 表；`unitVariation` 的 from／to 也套用同樣的上限。
+- 前端的參數滑桿和「各燈台不同數值」的滑桿都改用依燈數的上限。目前前端的燈數仍是 156，M6 改成從後端讀取。
+- `effects_v2.json` 原本 156 顆 × 9 台的內容完全不變；另外新增 `longn` 區塊（152 顆 × 5 台）：全部 preset 加 4 個貼著上限的 preset 的整條畫面雜湊（1008 組）、各燈台不同數值（54 組）、整台效果（6 組）、雨天線條（20 組）。
+- 後端函式的 `led_count`／`pixels` 參數預設值仍是 156，實際執行時一律由 config 傳入，沒有影響。
 - `generateBackendVectors.ts` 加產生一份 152 顆的測試資料，前後端都要比對。
 
 ## 5. Windows 部署（取代 Pi 的 systemd）
@@ -194,7 +200,7 @@ Windows 10 相容性：
 | M1 ✅ | 複製 backend、frontend，在 macOS 上 `uv sync --locked` | 原有 backend 與 frontend 測試全部通過（2026-11-02：來源 `moon_observe@b736485`（v0.1.12+1）以 `git archive` 匯出；backend 86、frontend 117 個測試通過；`tsc` + build 通過；`npx vite-node scripts/generateBackendVectors.ts` 重新產生的 fixture 與原檔逐 byte 相同） |
 | M2 ✅ | `config.py` + `hardware.py` + golden test | payload 的 channel 排列逐 byte 符合 `Artnet.pde`；月亮校正數值符合 1.3 節（2026-11-02：brightness 1.0 時與 LongN 移植版逐 byte 相同；brightness 0.4 加月亮校正時每個 channel 只會比 LongN 亮 0 或 1，因為 LongN 是先四捨五入再整數截斷，這裡是浮點數運算後只捨入一次；backend 共 102 個測試通過） |
 | M3 ✅ | `motor.py` + `/api/motor` + `/api/hardware` | API 測試：422/415/413 規則、只存在記憶體、重啟後一律 stop（2026-11-02：新增 `test_motor.py` 14 個測試，backend 共 116 個測試通過；實際啟動 `--api-only` 用 curl 測過 state／motor／hardware） |
-| M4 | effects 改為 152 顆 + 重新產生測試資料 | 所有效果在 152 / 156 顆下前後端都一致 |
+| M4 ✅ | effects 改為 152 顆 + 重新產生測試資料 | 所有效果在 152 / 156 顆下前後端都一致（2026-11-02：見下方 M4 細節；前端 118、backend 124 個測試通過） |
 | M5 | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0 |
 | M6 | 前端 | `npm test`、`tsc` 通過；用 Playwright 截圖確認 5 台的畫面和馬達 UI |
 | M7 | Windows 部署腳本 | 在 Windows 機器上完成：安裝 → 升級 → 回退 → 停止時馬達確實停下 |

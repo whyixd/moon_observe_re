@@ -70,6 +70,21 @@ const FIXED_PARAMETERS: Partial<Record<EffectId, readonly string[]>> = {
   'random-leds': ['durationMode'],
 }
 
+// 上限隨燈數而定的參數：最大值 = 燈數 + 位移（後端 effects.py 相同）。
+// Parameters capped by the LED count: max = ledCount + offset (same table in backend effects.py).
+const LED_COUNT_BOUNDS: Partial<Record<EffectId, Readonly<Record<string, number>>>> = {
+  'periodic-leds': { litCount: 0, darkGap: -1 },
+  'random-leds': { litCount: 0 },
+}
+
+/** A parameter's largest allowed value for this LED count; the manifest max unless it depends on the LED count. */
+export function parameterMax(effectId: EffectId, key: string, ledCount: number): number {
+  const parameter = getEffectManifest(effectId).parameters.find((entry) => entry.key === key)
+  if (!parameter) throw new Error(`unknown parameter ${key} for ${effectId}`)
+  const offset = LED_COUNT_BOUNDS[effectId]?.[key]
+  return offset === undefined ? parameter.max : Math.max(parameter.min, Math.min(parameter.max, ledCount + offset))
+}
+
 export function ignoresWeatherTiming(effectId: EffectId): boolean {
   return EFFECTS[effectId].ignoresWeatherTiming === true
 }
@@ -190,4 +205,5 @@ export {
   createEffectContext,
   EFFECT_SCHEMA_VERSION,
   globalEffectTimeSeconds,
+  MAX_LED_COUNT,
 } from './contract'

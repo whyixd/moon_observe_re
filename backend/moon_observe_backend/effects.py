@@ -31,6 +31,9 @@ EFFECT_IDS = (
     "unit-random",
     "roulette-ring",
 )
+# 一個 DMX universe（512 channels）最多放得下的 RGB 燈數；與 hardware.MAX_PIXELS 相同。
+# Most RGB LEDs one 512-channel DMX universe holds; equals hardware.MAX_PIXELS.
+MAX_LED_COUNT = 170
 # min, max, default, integer
 PARAMETERS: dict[str, dict[str, tuple[float, float, float, bool]]] = {
     "spectrum-cycle": {},
@@ -44,12 +47,12 @@ PARAMETERS: dict[str, dict[str, tuple[float, float, float, bool]]] = {
         "holdSeconds": (0, 2, 0.4, False),
     },
     "periodic-leds": {
-        "litCount": (1, 156, 12, True),
-        "darkGap": (0, 155, 12, True),
+        "litCount": (1, MAX_LED_COUNT, 12, True),
+        "darkGap": (0, MAX_LED_COUNT - 1, 12, True),
         "periodSeconds": (0.01, 20, 4, False),
     },
     "random-leds": {
-        "litCount": (1, 156, 12, True),
+        "litCount": (1, MAX_LED_COUNT, 12, True),
         "holdFrames": (1, 120, 4, True),
         "durationMode": (0, 1, 0, True),
         "minHoldFrames": (1, 120, 1, True),
@@ -160,12 +163,27 @@ def _rgb(value: Any, name: str) -> Rgb:
     return tuple(_number(value[key], f"{name}.{key}", 0, 1) for key in ("r", "g", "b"))  # type: ignore[return-value]
 
 
+# 上限隨燈數而定的參數：最大值 = 燈數 + 位移（前端 effects/index.ts 相同）。
+# Parameters capped by the LED count: max = led_count + offset (same table in frontend effects/index.ts).
+LED_COUNT_BOUNDS: dict[str, dict[str, int]] = {
+    "periodic-leds": {"litCount": 0, "darkGap": -1},
+    "random-leds": {"litCount": 0},
+}
+
+
+def parameter_max(effect_id: str, key: str, led_count: int) -> float:
+    """A parameter's largest allowed value for this LED count."""
+    low, high, _, _ = PARAMETERS[effect_id][key]
+    offset = LED_COUNT_BOUNDS.get(effect_id, {}).get(key)
+    return high if offset is None else max(low, min(high, led_count + offset))
+
+
 def variable_parameters(effect_id: str) -> tuple[str, ...]:
     """Parameters that may differ per unit."""
     return tuple(key for key in PARAMETERS[effect_id] if key not in FIXED_PARAMETERS.get(effect_id, ()))
 
 
-def _unit_variation(value: Any, effect_id: str) -> dict[str, Any]:
+def _unit_variation(value: Any, effect_id: str, led_count: int) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != {"parameter", "from", "to", "distribution"}:
         raise ValueError("unitVariation must contain parameter, from, to, distribution")
     parameter = value["parameter"]
@@ -173,7 +191,8 @@ def _unit_variation(value: Any, effect_id: str) -> dict[str, Any]:
         raise ValueError(f"unitVariation parameter {parameter!r} cannot vary for {effect_id}")
     if value["distribution"] not in UNIT_VARIATION_DISTRIBUTIONS:
         raise ValueError("unitVariation distribution must be linear, skip or random")
-    low, high, _, _ = PARAMETERS[effect_id][parameter]
+    low = PARAMETERS[effect_id][parameter][0]
+    high = parameter_max(effect_id, parameter, led_count)
     return {
         "parameter": parameter,
         "from": _number(value["from"], "unitVariation.from", low, high),
@@ -199,11 +218,12 @@ def validate_preset(value: Any, led_count: int = 156) -> dict[str, Any]:
         key: _number(raw_params.get(key, default), key, low, high, integer)
         for key, (low, high, default, integer) in PARAMETERS[effect_id].items()
     }
+    for key in LED_COUNT_BOUNDS.get(effect_id, {}):
+        if params[key] > parameter_max(effect_id, key, led_count):
+            raise ValueError(f"{effect_id} {key} exceeds ledCount ({led_count})")
     if effect_id == "periodic-leds":
         if (params["litCount"] - 1) * (params["darkGap"] + 1) >= led_count:
             raise ValueError("periodic-leds litCount/darkGap exceed ledCount")
-    if effect_id == "random-leds" and params["litCount"] > led_count:
-        raise ValueError("random-leds litCount exceeds ledCount")
     if effect_id == "random-leds" and params["minHoldFrames"] > params["holdFrames"]:
         raise ValueError("random-leds minHoldFrames exceeds holdFrames")
     color = value["color"]
@@ -237,7 +257,7 @@ def validate_preset(value: Any, led_count: int = 156) -> dict[str, Any]:
         normalized_color["weatherPalette"] = False
     result = {"schemaVersion": SCHEMA_VERSION, "effectId": effect_id, "parameters": params, "color": normalized_color}
     if "unitVariation" in value:
-        result["unitVariation"] = _unit_variation(value["unitVariation"], effect_id)
+        result["unitVariation"] = _unit_variation(value["unitVariation"], effect_id, led_count)
     return result
 
 

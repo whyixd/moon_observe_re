@@ -1,4 +1,4 @@
-import { EFFECT_SCHEMA_VERSION, type EffectModule } from './contract'
+import { EFFECT_SCHEMA_VERSION, MAX_LED_COUNT, type EffectModule } from './contract'
 
 const BLACK = { r: 0, g: 0, b: 0 }
 const WHITE = { r: 1, g: 1, b: 1 }
@@ -59,7 +59,7 @@ export const randomLeds: EffectModule = {
         label: '亮點數',
         unit: '顆 / 半圓',
         min: 1,
-        max: 156,
+        max: MAX_LED_COUNT, // 實際上限依燈數，見 parameterMax / capped by the LED count, see parameterMax
         step: 1,
         defaultValue: 12,
       },

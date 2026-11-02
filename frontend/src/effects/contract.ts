@@ -1,5 +1,8 @@
 export const EFFECT_SCHEMA_VERSION = 2 as const
 
+/** 一個 DMX universe（512 channels）最多放得下的 RGB 燈數。 / Most RGB LEDs one 512-channel DMX universe holds. */
+export const MAX_LED_COUNT = 170
+
 export type EffectId =
   | 'spectrum-cycle'
   | 'center-out-sine'

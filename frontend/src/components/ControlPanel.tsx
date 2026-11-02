@@ -3,6 +3,7 @@ import {
   EFFECT_MANIFEST,
   getEffectManifest,
   getVariableParameters,
+  parameterMax,
   presetForUnit,
   rgbToHex,
   type AxisChange,
@@ -131,22 +132,26 @@ const VARIATION_UNIT_COUNT = 9
 
 function UnitVariationEditor({
   effectPreset,
+  ledCount,
   onChange,
 }: {
   effectPreset: EffectPreset
+  ledCount: number
   onChange: (variation: UnitVariation | null) => void
 }) {
   const parameters = getVariableParameters(effectPreset.effectId)
   if (parameters.length === 0) return null
   const variation = effectPreset.unitVariation
   const definition = parameters.find((parameter) => parameter.key === variation?.parameter) ?? parameters[0]
+  const maxOf = (key: string) => parameterMax(effectPreset.effectId, key, ledCount)
 
   // 從目前值開始，結束值取往較寬一側的一半，讓差異一開始就看得到。
   // Start at the current value and end halfway toward the wider side, so the difference shows right away.
   const startFor = (key: string): UnitVariation => {
     const parameter = parameters.find((entry) => entry.key === key) ?? parameters[0]
     const current = effectPreset.parameters[parameter.key] ?? parameter.defaultValue
-    const edge = current - parameter.min < parameter.max - current ? parameter.max : parameter.min
+    const max = maxOf(parameter.key)
+    const edge = current - parameter.min < max - current ? max : parameter.min
     const to = parameter.min + Math.round(((current + edge) / 2 - parameter.min) / parameter.step) * parameter.step
     return { parameter: parameter.key, from: current, to: Number(to.toFixed(6)), distribution: variation?.distribution ?? 'linear' }
   }
@@ -182,10 +187,10 @@ function UnitVariationEditor({
                 onClick={() => onChange({ ...variation, distribution })}>{label}</button>
             ))}
           </div>
-          <Slider label="起始值" value={variation.from} min={definition.min} max={definition.max}
+          <Slider label="起始值" value={variation.from} min={definition.min} max={maxOf(definition.key)}
             step={definition.step} unit={definition.unit}
             onChange={(from) => onChange({ ...variation, from })} />
-          <Slider label="結束值" value={variation.to} min={definition.min} max={definition.max}
+          <Slider label="結束值" value={variation.to} min={definition.min} max={maxOf(definition.key)}
             step={definition.step} unit={definition.unit}
             onChange={(to) => onChange({ ...variation, to })} />
           <p className="control-note">第 1–9 台：{values.map((value) => value.toLocaleString()).join('、')}</p>
@@ -258,22 +263,22 @@ function effectParameterMax(
   effectPreset: EffectPreset,
   ledCount: number,
   key: string,
-  manifestMax: number,
 ): number {
-  if (effectPreset.effectId !== 'periodic-leds') return manifestMax
+  const max = parameterMax(effectPreset.effectId, key, ledCount)
+  if (effectPreset.effectId !== 'periodic-leds') return max
 
   const litCount = Math.max(1, Math.round(effectPreset.parameters.litCount ?? 12))
   const darkGap = Math.max(0, Math.round(effectPreset.parameters.darkGap ?? 12))
   if (key === 'litCount') {
-    return Math.min(manifestMax, Math.floor((ledCount - 1) / (darkGap + 1)) + 1)
+    return Math.min(max, Math.floor((ledCount - 1) / (darkGap + 1)) + 1)
   }
   if (key === 'darkGap' && litCount > 1) {
     return Math.min(
-      manifestMax,
+      max,
       Math.max(0, Math.floor((ledCount - 1) / (litCount - 1)) - 1),
     )
   }
-  return manifestMax
+  return max
 }
 
 export function ControlPanel({
@@ -473,7 +478,7 @@ export function ControlPanel({
                 min={parameter.min}
                 max={parameter.key === 'minHoldFrames'
                   ? Math.max(1, Math.round(effectPreset.parameters.holdFrames ?? 4))
-                  : effectParameterMax(effectPreset, settings.ledCount, parameter.key, parameter.max)}
+                  : effectParameterMax(effectPreset, settings.ledCount, parameter.key)}
                 step={parameter.step}
                 unit={parameter.unit}
                 onChange={(value) => onEffectParameter(parameter.key, value)}
@@ -489,7 +494,7 @@ export function ControlPanel({
               </p>
             )}
 
-            <UnitVariationEditor effectPreset={effectPreset} onChange={onUnitVariation} />
+            <UnitVariationEditor effectPreset={effectPreset} ledCount={settings.ledCount} onChange={onUnitVariation} />
 
             <p className="effect-description">{activeEffect.description}</p>
           </>

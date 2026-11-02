@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto'
 import { compileSequence, createSequenceStep, layerUnitWeight, resolveSequenceFrame } from '../src/simulation/sequence'
 import { writeFileSync } from 'node:fs'
-import { createDefaultEffectPreset, createEffectContext, getEffectCompletion, getVariableParameters, presetForUnit, sampleEffect, type EffectPreset } from '../src/effects'
+import { createDefaultEffectPreset, createEffectContext, getEffectCompletion, getVariableParameters, parameterMax, presetForUnit, sampleEffect, type EffectPreset } from '../src/effects'
 
 const ids = [
   'spectrum-cycle',
@@ -109,7 +109,7 @@ const unitVariations = ids.flatMap((id) => getVariableParameters(id).flatMap((pa
   (['linear', 'skip', 'random'] as const).map((distribution) => {
     const preset: EffectPreset = {
       ...createDefaultEffectPreset(id),
-      unitVariation: { parameter: parameter.key, from: parameter.max, to: parameter.min + parameter.step * 0.4, distribution },
+      unitVariation: { parameter: parameter.key, from: parameterMax(id, parameter.key, 156), to: parameter.min + parameter.step * 0.4, distribution },
     }
     return {
       preset,
@@ -217,6 +217,83 @@ const rainLines = {
   })),
 }
 
+// LongN：152 顆 × 5 台。同一套效果在不同燈數與台數下，前後端也要逐位元組一致。
+// LongN: 152 LEDs x 5 units. The same effects must also match byte for byte at another LED and unit count.
+const LONGN_LEDS = 152
+const LONGN_UNITS = 5
+const toBytes = (color: { r: number; g: number; b: number }) =>
+  [color.r, color.g, color.b].map((value) => Math.floor(Math.min(1, Math.max(0, value)) * 255 + 0.5))
+const sha256 = (bytes: number[]) => createHash('sha256').update(Buffer.from(bytes)).digest('hex')
+// 貼著 152 顆上限的參數。 / Parameters right at the 152-LED limits.
+const longnEdgePresets: EffectPreset[] = [
+  { ...createDefaultEffectPreset('random-leds'), parameters: { ...createDefaultEffectPreset('random-leds').parameters, litCount: LONGN_LEDS } },
+  { ...createDefaultEffectPreset('periodic-leds'), parameters: { litCount: 16, darkGap: 9, periodSeconds: 3 } },
+  { ...createDefaultEffectPreset('periodic-leds'), parameters: { litCount: 1, darkGap: LONGN_LEDS - 1, periodSeconds: 0.5 } },
+  { ...createDefaultEffectPreset('periodic-leds'), parameters: { litCount: LONGN_LEDS, darkGap: 0, periodSeconds: 2 } },
+]
+const longnPresets = [...presets, ...longnEdgePresets]
+const longnCenter = (LONGN_LEDS - 1) / 2
+const longn = {
+  ledCount: LONGN_LEDS,
+  unitCount: LONGN_UNITS,
+  // presetIndex 指向 presets 接上 edgePresets。 / presetIndex points into presets followed by edgePresets.
+  edgePresets: longnEdgePresets,
+  frames: longnPresets.flatMap((preset, presetIndex) =>
+    [0, 3, 19, 100, 800, 2650].flatMap((globalFrame) =>
+      [0, LONGN_UNITS - 1].map((unitIndex) => {
+        const controllerFrame = globalFrame + unitIndex * 2
+        const bytes = Array.from({ length: LONGN_LEDS }, (_, ledIndex) => toBytes(sampleEffect(
+          preset,
+          createEffectContext(controllerFrame, 40, ledIndex, LONGN_LEDS, unitIndex, LONGN_UNITS, globalFrame,
+            (ledIndex - longnCenter) / longnCenter),
+        ))).flat()
+        return { presetIndex, globalFrame, controllerFrame, unitIndex, sha256: sha256(bytes) }
+      }))),
+  unitVariations: ids.flatMap((id) => getVariableParameters(id).flatMap((parameter) =>
+    (['linear', 'random'] as const).map((distribution) => {
+      const preset: EffectPreset = {
+        ...createDefaultEffectPreset(id),
+        unitVariation: { parameter: parameter.key, from: parameterMax(id, parameter.key, LONGN_LEDS), to: parameter.min, distribution },
+      }
+      return {
+        preset,
+        values: Array.from({ length: LONGN_UNITS }, (_, unitIndex) => presetForUnit(preset, unitIndex, LONGN_UNITS).parameters[parameter.key]),
+        completionFrames: getEffectCompletion(preset, 40, LONGN_UNITS)?.frames ?? null,
+      }
+    }))),
+  unitEffects: unitEffectCases.map(([preset]) => {
+    const totalFrames = 2 * getEffectCompletion(preset, 40, LONGN_UNITS)!.frames
+    const leds = [0, 1, 37, 75, 76, 114, 150, 151]
+    const bytes: number[] = []
+    for (let frame = 0; frame < totalFrames; frame += 1) {
+      for (let unitIndex = 0; unitIndex < LONGN_UNITS; unitIndex += 1) {
+        for (const ledIndex of leds) {
+          bytes.push(...toBytes(sampleEffect(preset, createEffectContext(frame, 40, ledIndex, LONGN_LEDS, unitIndex, LONGN_UNITS, frame))))
+        }
+      }
+    }
+    return { preset, leds, totalFrames, sha256: sha256(bytes) }
+  }),
+  rainLines: {
+    frameRanges: [[0, 80], [2000, 2020]] as const,
+    units: [0, 2, 4],
+    cases: ids.map((effectId) => {
+      const preset = createDefaultEffectPreset(effectId)
+      const bytes: number[] = []
+      for (const [from, to] of [[0, 80], [2000, 2020]]) {
+        for (let frame = from; frame < to; frame += 1) {
+          for (const unitIndex of [0, 2, 4]) {
+            for (let ledIndex = 0; ledIndex < LONGN_LEDS; ledIndex += 1) {
+              bytes.push(...toBytes(sampleEffect(preset, createEffectContext(frame, 40, ledIndex, LONGN_LEDS, unitIndex, LONGN_UNITS, frame), frame, true)))
+            }
+          }
+        }
+      }
+      return { effectId, fps: 40, sha256: sha256(bytes) }
+    }),
+  },
+}
+
 const output = JSON.stringify({
   source: 'frontend/src/effects',
   schemaVersion: 2,
@@ -230,6 +307,7 @@ const output = JSON.stringify({
   axisChanges,
   unitEffects,
   rainLines,
+  longn,
 }, null, 2)
 
 if (process.argv.includes('--write')) {
