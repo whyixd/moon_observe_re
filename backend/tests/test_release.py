@@ -132,6 +132,16 @@ class WindowsScriptTests(unittest.TestCase):
         self.assertRegex(text, r"\$UvSha256 = '[0-9a-f]{64}'")
         self.assertRegex(build_release.WINSW_SHA256, r"^[0-9a-f]{64}$")
 
+    def test_a_release_that_cannot_start_is_rolled_back(self):
+        # Found on the site PC: Start-Service throws when the new release exits at once, which skipped
+        # the rollback. Starting must report failure instead, and activation must sit inside try/catch.
+        installer = script("install-release.ps1")
+        start = installer[installer.index("function Start-AndCheck"):installer.index("function Remove-OldReleases")]
+        self.assertRegex(start, r"try \{\s+Start-Service -Name \$ServiceName\s+\} catch \{[^}]*return \$false")
+        main = installer[installer.index("function Invoke-Main"):]
+        self.assertRegex(main, r"try \{\s+Set-Active \$ReleaseDir\s+\$healthy = Start-AndCheck \$ReleaseDir\s+\} catch")
+        self.assertRegex(main, r"try \{\s+Set-Active \$previous")
+
     def test_junction_is_removed_without_recursion(self):
         # Remove-Item -Recurse on a junction can delete the release behind it in Windows PowerShell 5.1.
         for name in ("install-release.ps1", "uninstall.ps1"):

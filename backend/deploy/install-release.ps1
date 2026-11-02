@@ -380,9 +380,16 @@ function Test-Healthy {
     return $false
 }
 
+# A release that exits right away makes Start-Service throw; that is an unhealthy release, not a reason
+# to abort before the rollback.
 function Start-AndCheck([string]$Release) {
     Log "Starting $ServiceName"
-    Start-Service -Name $ServiceName
+    try {
+        Start-Service -Name $ServiceName
+    } catch {
+        Write-Warning "install-release: $ServiceName did not start: $($_.Exception.Message)"
+        return $false
+    }
     return (Test-Healthy)
 }
 
@@ -435,9 +442,9 @@ function Invoke-Main([string]$WorkDir) {
         if (-not (Test-ConfigWith $ReleaseDir)) { Fail "$Version rejects the current config; active release unchanged" }
     }
     Add-FirewallRule
-    Set-Active $ReleaseDir
 
     if ($newConfig) {
+        Set-Active $ReleaseDir
         Write-Host ''
         Write-Host 'First install: the service is registered but NOT started. Check the Art-Net settings first:'
         Write-Host "  notepad $Config"
@@ -446,7 +453,15 @@ function Invoke-Main([string]$WorkDir) {
         return 0
     }
 
-    if (Start-AndCheck $ReleaseDir) {
+    # From the switch on, any failure ends in the rollback below instead of leaving this release active.
+    $healthy = $false
+    try {
+        Set-Active $ReleaseDir
+        $healthy = Start-AndCheck $ReleaseDir
+    } catch {
+        Write-Warning "install-release: activating $Version failed: $($_.Exception.Message)"
+    }
+    if ($healthy) {
         Log "$ServiceName is healthy on $Version"
         Remove-OldReleases $previous
         return 0
@@ -455,12 +470,18 @@ function Invoke-Main([string]$WorkDir) {
     Write-Warning "install-release: health check failed for $Version; see $LogDir"
     if ($previous -and (Test-Path -LiteralPath (Join-Path $previous $CompleteMarker))) {
         Log "Rolling back to $(Split-Path -Leaf $previous)"
-        Set-Active $previous
-        if (Start-AndCheck $previous) {
-            Log "Rollback to $(Split-Path -Leaf $previous) is healthy"
-        } else {
-            Write-Warning "install-release: the rollback release is unhealthy too; see $LogDir"
+        try {
+            Set-Active $previous
+            if (Start-AndCheck $previous) {
+                Log "Rollback to $(Split-Path -Leaf $previous) is healthy"
+            } else {
+                Write-Warning "install-release: the rollback release is unhealthy too; see $LogDir"
+            }
+        } catch {
+            Write-Warning "install-release: rollback failed: $($_.Exception.Message)"
         }
+    } else {
+        Write-Warning 'install-release: no previous release to roll back to'
     }
     return 1
 }

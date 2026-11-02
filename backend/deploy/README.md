@@ -174,7 +174,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\MoonObserve\current\deplo
 
 ## 9. 現況限制
 
-- 三個 `.ps1` 在開發機上只做靜態檢查（ASCII、版本 regex、5.1 語法、`-UseBasicParsing` 等），沒有實際執行；第一次要在 Windows 上照第 7 節走一遍。
+- 三個 `.ps1` 在開發機上只做靜態檢查（ASCII、版本 regex、5.1 語法、`-UseBasicParsing` 等）。2026-11-03 已在現場電腦（Windows 10 22H2）用 rc 測試版實際跑過首次安裝、升級、回退、自動回退和停止（細節見 `PLAN.md`）；第 7 節裡接上控制器的部分和重新開機還要在現場做。
+- 中文版 Windows 上 `icacls`、`sc.exe` 的成功訊息和 `Write-Warning` 的「警告」字樣在 SSH 裡會顯示成亂碼，不影響結果。
 - WinSW 的 SHA-256 是 2026-11-03 從 GitHub Release 下載後記下的（GitHub 沒有公布官方雜湊），之後的下載都比對這個值。uv 的雜湊取自官方發布的 `.sha256`。
 - 沒有 CI 自動建置與發布，也沒有獨立簽章；`SHA256SUMS` 和 zip 來自同一個 GitHub Release，只能偵測傳輸損壞。
 - 第一次安裝某個版本需要網路（Python 與套件）；完全離線安裝不在範圍內。

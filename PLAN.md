@@ -219,6 +219,13 @@ Windows 10 相容性：
 - 停止：新增 `moon_observe_backend/stopping.py`，把 SIGINT、SIGTERM、SIGBREAK 都轉成一次 KeyboardInterrupt（第二次起忽略，不會打斷送全 0），繼承來的「忽略 SIGINT」也會被蓋掉；Windows 上另外呼叫 `SetConsoleCtrlHandler(None, False)` 重新打開 Ctrl+C。`tests/test_stopping.py` 實際啟動後端，用 SIGTERM 與「繼承忽略的 SIGINT」停止，確認收到全 0。
 - 驗證（開發機）：`.ps1` 只做靜態測試（ASCII、無 BOM、版本 regex 一致且區分大小寫、沒有 PowerShell 7 語法、`-UseBasicParsing`、範本佔位字串與 XML 格式）；想在 Mac 上下載免安裝 PowerShell 做語法檢查，被權限規則擋下，沒有執行。另在暫存資料夾的臨時 tag 上實際建置 zip、重建比對雜湊，並用解壓後的 release `uv sync` + `run.py --check` 通過。
 
+現場電腦實測（M7，2026-11-03，透過 SSH 金鑰登入 `desktop-9n17278\define moon`）：
+- 電腦狀態：Windows 10 22H2（19045）、.NET 4.8.1、PowerShell 5.1；Ethernet（Realtek，中文名稱「乙太網路」）已設 `2.0.0.99/24`，當時沒插網路線；Wi-Fi `192.168.1.52`（私人網路）。時區原本是中歐時間，依指示改成 Taipei Standard Time。桌面有舊的 LongN，但沒有設定自動啟動。
+- 測試方式：在暫存的 clone 上打 `v0.2.0-rc.1`（正常）、`rc.2`（同內容）、`rc.3`（設定檢查會過、但一啟動就結束）三個 tag 建 zip（不 push、不發 Release），scp 過去用 `-ArtifactPath` 安裝。測試用的 config 把 Art-Net 全部送到 127.0.0.1（網路線沒插時送 2.0.0.x 會經 Wi-Fi 跑到公網）。
+- 結果：首次安裝（uv 0.12.23、CPython 3.12.15）、服務帳號 LocalService + 延遲自動啟動、ACL、防火牆（從 Mac 經 Wi-Fi 打得開控制頁）都正確。`Stop-Service` 0.3 秒完成，10 個 universe 最後都收到兩包全 0（停止前馬達為 230／255），log 最後是 `Stopped.`，WinSW 記錄 exit code 0；venv 的 `python.exe` 是啟動器、真正的 Python 是子程序，Ctrl+C 一樣送得到。升級 rc.1 → rc.2 10 秒、健康檢查通過；不帶 zip 回退到 rc.1 成功。
+- **找到並修正的 bug**：壞掉的版本一啟動就結束時 `Start-Service` 會丟例外，直接跳到最外層 catch，沒有回退，`current` 停在壞版本、服務停止。修正後啟動失敗視為不健康，切換之後的任何例外都會回退；用修正版重測，rc.3 自動回退到 rc.1 成功（exit code 1）。`test_release.py` 加了回歸測試。rc.1／rc.2 裡的 installer 還是舊版，下一個正式版本才會帶修正。
+- 測完狀態：服務停止（開機仍會自動啟動，config 只送 127.0.0.1）、`current` → rc.1，保留 rc.1、rc.2，刪除 rc.3。
+
 ## 6. 里程碑與驗證
 
 | # | 內容 | 完成條件 |
@@ -229,7 +236,7 @@ Windows 10 相容性：
 | M4 ✅ | effects 改為 152 顆 + 重新產生測試資料 | 所有效果在 152 / 156 顆下前後端都一致（2026-11-02：見下方 M4 細節；前端 118、backend 124 個測試通過） |
 | M5 ✅ | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0（2026-11-03：`test_send.py` 用真的 StupidArtnet 對本機 listener 收到 5 格 × 2 universe = 10 包，接著每個 universe 兩包全 0；另外實際啟動 `run.py`，用 API 切換馬達與月亮校正、Ctrl+C 結束，封包內容都正確；backend 共 127 個測試通過） |
 | M6 ✅ | 前端 | `npm test`、`tsc` 通過；用 Playwright 截圖確認 5 台的畫面和馬達 UI（2026-11-03：前端 124、backend 127 個測試通過；用 Playwright 控制本機 Chrome 實際操作模擬模式與後端控制模式，馬達、月亮校正、相機取景都確認過） |
-| M7 🟡 | Windows 部署腳本 | 在 Windows 機器上完成：安裝 → 升級 → 回退 → 停止時馬達確實停下（2026-11-03：腳本、artifact 與停止處理完成，backend 138 個測試通過；**Windows 實機驗收尚未進行**，清單見 `backend/deploy/README.md` 第 7 節） |
+| M7 🟡 | Windows 部署腳本 | 在 Windows 機器上完成：安裝 → 升級 → 回退 → 停止時馬達確實停下（2026-11-03：透過 SSH 在現場電腦 DESKTOP-9N17278（Windows 10 22H2、PowerShell 5.1）用 rc 測試版完成首次安裝、升級、手動回退、自動回退與停止測試，細節見下方；**還沒做**：接上控制器看燈與馬達實際反應、重新開機後自動啟動） |
 | M8 | 文件 | 改寫 `system-reference.md`、backend 與 deploy 的 README |
 
 ## 7. Git 與 repo 內容
