@@ -1,5 +1,7 @@
 # LED Motion Simulator Plan
 
+> 參考系統 Moon Observe（9 台、360 RPM、GL-C-616WL）的早期規劃，只供追溯；本 repo 的 LongN 模擬器見 [`frontend/README.md`](../README.md) 與 [`system-reference.md`](../../system-reference.md)。
+
 ## Purpose
 
 建立可完全離線執行的 browser simulator，在沒有 Raspberry Pi、GL-C-616WL、LED strip 與 motor hardware 時，預覽 Moon Observe 在以下條件下的視覺結果：

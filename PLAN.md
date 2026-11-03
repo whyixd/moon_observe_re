@@ -237,7 +237,7 @@ Windows 10 相容性：
 | M5 ✅ | 整合 `output.py`、結束流程 | `--api-only` 正常；用本機 UDP listener 驗證 10 個封包、結束時送全 0（2026-11-03：`test_send.py` 用真的 StupidArtnet 對本機 listener 收到 5 格 × 2 universe = 10 包，接著每個 universe 兩包全 0；另外實際啟動 `run.py`，用 API 切換馬達與月亮校正、Ctrl+C 結束，封包內容都正確；backend 共 127 個測試通過） |
 | M6 ✅ | 前端 | `npm test`、`tsc` 通過；用 Playwright 截圖確認 5 台的畫面和馬達 UI（2026-11-03：前端 124、backend 127 個測試通過；用 Playwright 控制本機 Chrome 實際操作模擬模式與後端控制模式，馬達、月亮校正、相機取景都確認過） |
 | M7 🟡 | Windows 部署腳本 | 在 Windows 機器上完成：安裝 → 升級 → 回退 → 停止時馬達確實停下（2026-11-03：透過 SSH 在現場電腦 DESKTOP-9N17278（Windows 10 22H2、PowerShell 5.1）用 rc 測試版完成首次安裝、升級、手動回退、自動回退與停止測試，細節見下方；**還沒做**：接上控制器看燈與馬達實際反應、重新開機後自動啟動） |
-| M8 | 文件 | 改寫 `system-reference.md`、backend 與 deploy 的 README |
+| M8 ✅ | 文件 | 改寫 `system-reference.md`、backend 與 deploy 的 README（2026-11-03：`system-reference.md` 改成 LongN 系統並新增「LongN 硬體對應」一節；重寫 `backend/README.md`、`frontend/README.md`，修正 `frontend/src/effects/README.md` 的 156／9 台／360 RPM；新增根目錄 `README.md`；`backend/docs/`、`frontend/docs/` 標明是參考系統的歷史文件） |
 
 ## 7. Git 與 repo 內容
 
