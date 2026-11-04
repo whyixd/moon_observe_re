@@ -32,6 +32,7 @@ universes = [0, 1]
 [render]
 preset = "preset.example.json"
 sequence = "sequence.json"
+# schedule = "schedule.json"  # 定時播放（控制頁「排程」分頁存檔）；省略時放在 sequence.json 同一個資料夾
 fps = 40
 pixels = 152       # one semicircle: foot -> apex -> foot
 unit_count = 5

@@ -21,6 +21,7 @@ from .effects import Rgb, completion_frames
 from .hardware import PACKET_SIZE, blackout_payload, build_payload
 from .renderer import render_frame
 from .sequence import SequenceStore, render_sequence_frame
+from .schedule import Scheduler, ScheduleStore
 from .stopping import install_stop_handlers
 from .palette import PaletteStore
 from .playback import PlaybackMonitor
@@ -70,6 +71,7 @@ def stream(
     playback_reporter: Callable[[str, Any, int, int], None] | None = None,
     playback_advance: Callable[[int, int, bool, bool], None] | None = None,
     unit_colors_provider: Callable[[], Sequence[Rgb | None] | None] | None = None,
+    scheduler: Scheduler | None = None,
     clock: Callable[[], float] = time.perf_counter,
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
@@ -78,6 +80,8 @@ def stream(
     Every unit gets one 512-byte frame per output frame (``hardware.build_payload``), sent unchanged to
     each of its universes. ``motor_provider`` returns (speed, direction) per unit (index = unit_id - 1);
     without it every motor stays stopped. On exit every universe gets the all-zero frame twice.
+    ``scheduler`` (timed shows) overrides the motors, dims or blacks out the lights and restarts playback
+    from step 1 when a round begins; while it is disabled the output is exactly as without it.
     """
     if seconds is not None and (not math.isfinite(seconds) or seconds <= 0):
         raise ValueError("seconds must be positive and finite")
@@ -126,6 +130,18 @@ def stream(
             active_preset = preset_provider() if preset_provider is not None else preset
             sequence_mode = sequence_state is not None and sequence_state[0] == "sequence"
             schedule = sequence_state[1] if sequence_mode else None
+            show = None
+            if scheduler is not None:
+                show = scheduler.advance(
+                    0 if last_frame is None else frame - last_frame,
+                    round_length(schedule, active_preset, fps, unit_count)[0],
+                    frame - playback_start_frame,
+                )
+                if show.restart:
+                    playback_start_frame = frame
+                    restarted = True
+                if show.phase == "disabled":
+                    show = None
             if playback_advance is not None:
                 # 讀取天氣前先回報進度，讓造訪結束與延後的天氣時間效果從這一格生效。
                 # Report progress before reading the weather so visit ends and deferred timing apply from this frame.
@@ -144,7 +160,10 @@ def stream(
                 last_weather_generation = weather_generation
             restarts += restarted
             playback_frame = frame - playback_start_frame
-            motors = tuple(motor_provider()) if motor_provider is not None else (("stop", "cw"),) * unit_count
+            if show is not None:
+                motors = show.motors
+            else:
+                motors = tuple(motor_provider()) if motor_provider is not None else (("stop", "cw"),) * unit_count
             if len(motors) != unit_count:
                 raise ValueError("motor_provider must return one (speed, direction) per unit")
             if last_frame is not None:
@@ -177,8 +196,16 @@ def stream(
                     "virtualPhaseRadians": phases[unit_id - 1],
                 }
                 color_override = weather.get("color") if category is not None else None
+                if test_color is None and show is not None and show.blackout:
+                    # 時段外：全 0（燈全暗、馬達停）。 / Outside the show windows: all zero (dark, motor stopped).
+                    payloads[unit_id] = blackout_payload()
+                    client.send(payloads[unit_id])
+                    sent += 1
+                    continue
                 if test_color is not None:
                     pixels = [test_color] * config["pixels"]
+                elif show is not None and show.light <= 0:
+                    pixels = [(0.0, 0.0, 0.0)] * config["pixels"]
                 elif sequence_mode:
                     pixels = render_sequence_frame(
                         sequence_state[1], unit, playback_frame,
@@ -192,6 +219,8 @@ def stream(
                         fps=fps, rpm=0, raining=category == "rain",
                         color_override=color_override,
                     )
+                if test_color is None and show is not None and 0 < show.light < 1:
+                    pixels = [(r * show.light, g * show.light, b * show.light) for r, g, b in pixels]
                 speed, direction = motors[unit_id - 1]
                 payloads[unit_id] = build_payload(
                     pixels, hardware=hardware, motor=motor, speed=speed, direction=direction,
@@ -233,6 +262,10 @@ def main(argv: list[str] | None = None) -> int:
             from .sequence import validate_sequence
             validate_sequence(json.loads(sequence_path.read_text(encoding="utf-8")),
                               config["pixels"], config["fps"], config["unit_count"])
+        schedule_path = Path(config["schedule_path"])
+        if schedule_path.exists():
+            from .schedule import validate_schedule
+            validate_schedule(json.loads(schedule_path.read_text(encoding="utf-8")), config["unit_count"])
         palette_store = PaletteStore(config["weather"]["palette_path"]) if config["weather"] is not None else None
         if args.check:
             print(f"OK: {preset['effectId']} -> {len(config['targets'])} Art-Net target(s)")
@@ -250,11 +283,14 @@ def main(argv: list[str] | None = None) -> int:
         unit_color_store = UnitColorStore(config["unit_count"])
         motor_store = MotorStore(config["motor"], config["unit_count"])
         hardware_store = HardwareStore(config["hardware"], config["pixels"])
+        schedule_store = ScheduleStore(config["schedule_path"], config["unit_count"])
+        scheduler = Scheduler(schedule_store, config["fps"], config["unit_count"])
         with make_server(store, config, args.api_port, host=args.api_host,
                          sequence_store=sequence_store, frontend_dir=frontend_dir,
                          weather_store=weather_store, playback_monitor=playback_monitor,
                          unit_color_store=unit_color_store, motor_store=motor_store,
-                         hardware_store=hardware_store) as server:
+                         hardware_store=hardware_store, schedule_store=schedule_store,
+                         scheduler=scheduler) as server:
             if weather_store is not None:
                 weather_store.start()
             try:
@@ -269,13 +305,17 @@ def main(argv: list[str] | None = None) -> int:
                     sent = stream(config, preset, seconds=args.seconds,
                                   preset_provider=store.snapshot, motor_provider=motor_store.snapshot,
                                   moon_correction_provider=hardware_store.moon_correction,
-                                  sequence_provider=sequence_store.snapshot,
+                                  # 排程啟用時串接一律循環，休息時燈效才能繼續。
+                                  # While a timed show is enabled the sequence always loops so rest keeps playing.
+                                  sequence_provider=lambda: sequence_store.snapshot(loop=schedule_store.enabled()),
                                   weather_provider=weather_store.snapshot if weather_store is not None else None,
                                   playback_reporter=playback_monitor.report,
                                   playback_advance=weather_store.advance if weather_store is not None else None,
-                                  unit_colors_provider=unit_color_store.current)
+                                  unit_colors_provider=unit_color_store.current,
+                                  scheduler=scheduler)
                 finally:
                     playback_monitor.stop()
+                    scheduler.stop()
                     server.shutdown()
                     worker.join(timeout=2)
             finally:

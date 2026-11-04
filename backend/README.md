@@ -16,7 +16,7 @@
 | 459–512 | 0 |
 
 - 152 顆各自由效果計算（LongN 原本是 76 色前後鏡像）。版面、亮度、色序與馬達數值都可在 `[hardware]`、`[motor]` 調整，預設就是 LongN；golden test（`tests/test_hardware.py`）和 LongN 的 `Artnet.pde` 逐 byte 比對。
-- 馬達只能從 API 或控制頁手動設定（每台各自的速度與方向），串接不會改變轉速；後端啟動時一律停止。
+- 馬達從 API 或控制頁手動設定（每台各自的速度與方向），或在排程啟用時由「定時播放」控制；串接不會改變轉速。手動設定在後端啟動時一律停止。
 - 結束時（正常結束、Ctrl+C、SIGTERM、Windows 服務停止、例外）每個 universe 送兩次全 0：燈全暗、馬達停。斷電、當機或網路中斷時無法保證送達；控制盒收不到 Art-Net 時**不會**自己停馬達。這不是緊急停止。
 - `stupidArtnet` 的 `send()` 沒有接收確認，實際顯示要在現場確認。
 
@@ -25,7 +25,8 @@
 - `config.example.toml`：LongN 現場設定（5 台、`2.0.0.101`–`105`、`universes = [0, 1]`、152 顆、5 台、`[hardware]`、`[motor]`）。本機使用時複製成不進版控的 `config.toml`。現場建議取消 `source_ip = "2.0.0.99"` 的註解，把 Art-Net 綁在 Ethernet：沒有綁定時，網路線一拔，封包會改走 Wi-Fi 送到公網的 2.0.0.x。
 - `preset.example.json`：效果範例。範例 TOML 的 `render.preset` 指向它，本機使用時請改成不進版控的 `preset.json`（複製一份），因為控制頁套用效果時會覆寫 `render.preset` 指向的檔案。Windows 安裝時會自動改到 `preset\preset.json`。
 - `sequence.example.json`：串接範例；實際只使用 `render.sequence` 指向的一份 `sequence.json`，不存在時以目前 preset 建立單段串接。
-- 路徑都相對於 TOML 檔所在目錄。preset／sequence／palette 一律原子寫入。
+- `schedule.example.json`：定時播放範例；實際使用 `render.schedule` 指向的 `schedule.json`（省略時放在 `sequence.json` 同一個資料夾），不存在時排程關閉。
+- 路徑都相對於 TOML 檔所在目錄。preset／sequence／palette／schedule 一律原子寫入。
 
 ## 本機執行（開發機）
 
@@ -57,9 +58,19 @@ uv run --locked --project backend python backend/run.py --config backend/config.
 | PUT | `/api/playback/restart` | `{"source":"sequence"\|"single"}` 從頭重播 |
 | GET | `/api/playback` | 輸出迴圈目前位置與每台馬達狀態 |
 | GET／PUT／DELETE | `/api/test/units` | 單色測試 |
+| GET／PUT | `/api/schedule` | 讀／存定時播放（含目前階段 `status`）；排程啟用時 `PUT /api/motor` 回 409 |
 | GET／PUT／DELETE | `/api/weather`、`/api/weather/override`、`/api/weather/visit`、`/api/weather/palette` | 天氣（需 `[weather]`） |
 
-馬達狀態、月亮校正開關、單色測試、天氣手動測試都只在記憶體，重啟後回到預設（馬達一律停止、月亮校正回到 config）。
+馬達狀態、月亮校正開關、單色測試、天氣手動測試都只在記憶體，重啟後回到預設（馬達一律停止、月亮校正回到 config）。排程存在 `schedule.json`，啟用時重新開機後會自動依時段表演。
+
+## 定時播放
+
+在控制頁「排程」分頁（或 `PUT /api/schedule`）設定，存檔後立即生效：
+
+- 表演時段內：馬達先暖機（`spinUpSeconds`，預設 5 秒），再從串接第 1 段播放一輪；播完休息 `restMinutes` 分鐘（馬達停、燈效繼續循環），休息結束先暖機再重新播放。
+- 時段開始時暖機期間燈全暗；時段結束時馬達立即停止、燈在 `endFadeSeconds` 內淡出；時段外持續送全 0。
+- 每日時段可設多段；特殊日期取代當天的每日時段，也可設成當天不表演。時間依電腦本地時間，時段不跨午夜（相鄰時段會接續播放）。
+- 排程啟用時串接一律循環播放、手動馬達命令回 409；單色測試照常可用。完整規則見 `system-reference.md` 1.8 與 5.5 節。
 
 ## 天氣
 
@@ -76,4 +87,6 @@ cd backend
 uv run --locked python -m unittest discover -s tests -v
 ```
 
-包含：前端產生的 golden vectors（156 × 9 與 LongN 152 × 5）、LongN 封包 golden test、設定驗證、API（422／415／413）、本機 Art-Net UDP 接收、實際啟動後端並用 SIGTERM／SIGINT 停止確認送出全 0、Windows 發布腳本的靜態檢查與 zip 建置。`docs/` 是參考系統的早期規劃，不代表目前的程式。
+包含：前端產生的 golden vectors（156 × 9 與 LongN 152 × 5）、LongN 封包 golden test、設定驗證、API（422／415／413／409）、定時播放（時段判斷、狀態機、輸出封包）、本機 Art-Net UDP 接收、實際啟動後端並用 SIGTERM／SIGINT 停止確認送出全 0、Windows 發布腳本的靜態檢查與 zip 建置。`docs/` 是參考系統的早期規劃，不代表目前的程式。
+
+`tests/test_stopping.py` 會在本機 UDP 6454 收 Art-Net；如果開發用的後端正在把 Art-Net 送到 `127.0.0.1`，請先停掉它，否則測試會一直收到封包而卡住。

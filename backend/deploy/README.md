@@ -25,11 +25,11 @@ C:\MoonObserve\                        只有 Administrators 可寫；LocalServi
 C:\ProgramData\MoonObserve\            LocalService 唯讀
 ├── config.toml                        只在缺少時建立，升級不覆寫
 ├── github-token                       選填；只有 Administrators 可讀
-├── preset\                            LocalService 可寫：preset.json、sequence.json、palette.json
+├── preset\                            LocalService 可寫：preset.json、sequence.json、palette.json、schedule.json
 └── logs\                              LocalService 可寫：MoonObserve.out.log、.err.log、.wrapper.log
 ```
 
-`config.toml` 第一次由 `config.example.toml` 產生，`render.preset`、`render.sequence` 與（註解中的）`weather.palette` 會改到 `preset\` 底下；啟用 `[weather]` 時請一併取消 `palette` 那行的註解，否則 `palette.json` 會落在服務不能寫的資料夾。
+`config.toml` 第一次由 `config.example.toml` 產生，`render.preset`、`render.sequence` 與（註解中的）`weather.palette` 會改到 `preset\` 底下；啟用 `[weather]` 時請一併取消 `palette` 那行的註解，否則 `palette.json` 會落在服務不能寫的資料夾。`schedule.json`（定時播放）預設跟著 `sequence.json` 放在 `preset\`，不用改 config。
 
 ## 0. 現場電腦的準備（只做一次）
 

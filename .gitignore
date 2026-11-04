@@ -13,6 +13,7 @@ backend/config.toml
 backend/preset.json
 backend/sequence.json
 backend/palette.json
+backend/schedule.json
 
 # Temporary verification directories
 .tmp_*/

@@ -12,6 +12,8 @@ type MotorPanelProps = {
   /** 後端的 channel 與 DMX 數值（後端模式才有）。 / Backend channels and DMX values (backend mode only). */
   backendMotor?: BackendMotorState | null
   disabled?: boolean
+  /** 後端排程啟用中：馬達由排程控制，這裡只顯示。 / The backend schedule drives the motors; display only. */
+  scheduled?: boolean
   onMotor: (command: MotorCommand) => void
   onMoonCorrection: (enabled: boolean) => void
 }
@@ -60,10 +62,12 @@ export function MotorPanel({
   moonCorrection,
   backendMotor = null,
   disabled = false,
+  scheduled = false,
   onMotor,
   onMoonCorrection,
 }: MotorPanelProps) {
   const channels = backendMotor?.channels
+  const motorDisabled = disabled || scheduled
   return (
     <div className="motor-controls">
       <span className="control-label">
@@ -71,12 +75,15 @@ export function MotorPanel({
           ? `馬達控制 · Art-Net Channel ${channels.speed}（速度）／${channels.direction}（方向）`
           : '模擬馬達（只影響 3D 畫面）'}
       </span>
-      <MotorRow label="全部" motor={commonMotor(motors)} disabled={disabled} onMotor={onMotor} />
+      {scheduled && (
+        <p className="weather-override" role="status">排程啟用中：馬達由排程控制（到「排程」分頁關閉排程後才能手動控制）</p>
+      )}
+      <MotorRow label="全部" motor={commonMotor(motors)} disabled={motorDisabled} onMotor={onMotor} />
       {motors.map((motor, index) => {
         const unit = backendMotor?.units[index]
         return (
-          <MotorRow key={index} label={`第 ${index + 1} 台`} motor={motor} disabled={disabled}
-            detail={unit ? `${unit.value}／${unit.directionValue}` : undefined}
+          <MotorRow key={index} label={`第 ${index + 1} 台`} motor={motor} disabled={motorDisabled}
+            detail={unit && !scheduled ? `${unit.value}／${unit.directionValue}` : undefined}
             onMotor={(command) => onMotor({ ...command, unitIds: [index + 1] })} />
         )
       })}
@@ -87,7 +94,7 @@ export function MotorPanel({
       </label>
       <p className="control-note">
         {mode === 'backend'
-          ? '馬達只在這裡手動控制，串接與效果不會改變轉速。後端重新啟動後一律停止、月亮校正回到設定檔的預設；Art-Net 中斷時控制器不會自動停止馬達。'
+          ? '馬達由這裡手動控制，或由「排程」分頁定時控制；串接與效果不會改變轉速。後端重新啟動後一律停止、月亮校正回到設定檔的預設；Art-Net 中斷時控制器不會自動停止馬達。'
           : '模擬模式預設全速順轉；切到「後端控制」後改為顯示後端實際的馬達狀態。'}
       </p>
     </div>

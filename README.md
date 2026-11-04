@@ -11,7 +11,7 @@
 
 | 路徑 | 內容 |
 |---|---|
-| `backend/` | Python 3.12（uv）：效果渲染、LongN 封包、控制 API、天氣、Windows 部署腳本 → [README](backend/README.md)、[部署](backend/deploy/README.md) |
+| `backend/` | Python 3.12（uv）：效果渲染、LongN 封包、控制 API、天氣、定時播放、Windows 部署腳本 → [README](backend/README.md)、[部署](backend/deploy/README.md) |
 | `frontend/` | React + three.js：3D 模擬器與控制頁 → [README](frontend/README.md) |
 | `LongN/` | 原 Processing 程式（`*.pde`、`data/IP.ini`），只供對照硬體格式 |
 | [`system-reference.md`](system-reference.md) | 系統規格（效果引擎、LongN 封包、前端、API、設定、天氣、部署位置） |
@@ -40,4 +40,5 @@ cd frontend && npm install && npm run dev            # http://localhost:5173，/
 
 - 開發機上的前後端與部署流程已完成；Windows 安裝、升級、回退與「停止服務時送全 0」已在現場電腦遠端測過。
 - 待現場確認：接上控制器後燈與馬達的實際反應（LED index 0 的位置、GRB 色序、順／逆方向）、5 台的實際排列、重新開機後自動啟動。
-- 控制盒收不到 Art-Net 時不會自己停馬達；目前只保證程式結束時送全 0。
+- 定時播放（每日／特殊日期時段、播一輪後休息、休息後先暖機再播放）已完成並在開發機實測；現場待確認暖機秒數是否足夠，以及重新開機後是否自動進入正確階段。
+- 控制盒收不到 Art-Net 時不會自己停馬達；目前只保證程式結束時送全 0（排程的時段外會持續送全 0）。

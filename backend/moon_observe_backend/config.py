@@ -122,7 +122,7 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
         raise ValueError("config requires [artnet] and [render] sections (optional: [hardware], [motor], [weather])")
     artnet = raw["artnet"]
     render = raw["render"]
-    if set(artnet) - {"ip", "universe", "universes", "source_ip", "targets"} or set(render) - {"preset", "sequence", "fps", "pixels", "unit_id", "unit_count"}:
+    if set(artnet) - {"ip", "universe", "universes", "source_ip", "targets"} or set(render) - {"preset", "sequence", "schedule", "fps", "pixels", "unit_id", "unit_count"}:
         raise ValueError("unknown config field")
     hardware = _hardware(raw.get("hardware", {}))
     motor = _motor(raw.get("motor", {}))
@@ -197,6 +197,12 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(sequence_name, str) or not sequence_name:
         raise ValueError("render.sequence must name a JSON file")
     sequence_path = (config_path.parent / sequence_name).resolve()
+    # 預設和 sequence.json 同一個資料夾：Windows 安裝把 sequence 放在服務可寫的 preset\ 底下，排程跟著放。
+    # Defaults next to sequence.json: the Windows install keeps sequence under the service-writable preset\.
+    schedule_path = (
+        (config_path.parent / _file_name(render["schedule"], "render.schedule")) if "schedule" in render
+        else sequence_path.parent / "schedule.json"
+    ).resolve()
     with preset_path.open("r", encoding="utf-8") as stream:
         preset = validate_preset(json.load(stream), pixels)
     config = {
@@ -210,5 +216,6 @@ def load_config(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
         "unit_count": unit_count,
         "preset_path": str(preset_path),
         "sequence_path": str(sequence_path),
+        "schedule_path": str(schedule_path),
     }
     return config, preset

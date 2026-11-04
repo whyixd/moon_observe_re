@@ -1,6 +1,6 @@
 # Moon Observe（LongN）系統參考（給 agents）
 
-> 從程式碼整理（2026-11-03，`master`）。各段標出**權威來源檔案**，文件與程式不一致時以程式為準；改動行為後請同步更新此文件。移植計畫、決策與現場測試紀錄見 [`PLAN.md`](PLAN.md)。
+> 從程式碼整理（2026-11-04，`master`）。各段標出**權威來源檔案**，文件與程式不一致時以程式為準；改動行為後請同步更新此文件。移植計畫、決策與現場測試紀錄見 [`PLAN.md`](PLAN.md)。
 
 專案概觀：把 Moon Observe 的效果系統（effect engine、串接、天氣、控制頁）接到 **LongN** 的硬體上。一台 Windows 10 電腦執行 Python 後端，把效果算成影格，用 Art-Net 送到 **5 台** LongN 控制盒；每台控制盒驅動一組旋轉的雙半圓燈（每條半圓 **152 顆** RGB LED）和一顆馬達。同一個後端程序也提供 React 前端頁面與 JSON API；前端是 3D 模擬器兼控制台。LongN 原本的 Processing 程式（`LongN/`）只作為硬體對照，不再使用。
 
@@ -118,14 +118,16 @@ sampleEffect(preset, context, elapsedFrame, raining) -> RGB（各通道 0–1）
 
 1. 主迴圈依實際時鐘計算 `due = floor(elapsed * fps)`，追上進度後渲染（不補送漏掉的影格）。
 2. 讀 `SequenceStore.snapshot()` →（mode, compiled, generation）。generation 改變（儲存串接、套用單一效果、restart API）或天氣 generation 改變 → `playback_start_frame = frame`，從第 0 影格重播。
-3. 呼叫 `WeatherStore.advance(...)`（造訪計時、在段落邊界套用延後的天氣分類），再取天氣 snapshot。
-4. 讀 `MotorStore.snapshot()`（每台 speed／direction）與 `HardwareStore.moon_correction()`；API 的變更從下一格生效。每台的**虛擬轉角**依該台目前的 rpm 累加（stop 為 0、ccw 為負），作為 `world-upper-half` 的相位估計（`virtualPhaseRadians`，`render_frame` 的 `rpm=0`）。
-5. 對每個 unit（一個 target）算一次、送到它的每個 universe：
+   排程啟用時讀的是一律循環的版本（`snapshot(loop=True)`，忽略 `ending`）。
+3. 呼叫 `Scheduler.advance(...)`（定時播放，見 1.8）：決定這一格的階段、馬達、燈的亮度倍率；暖機結束那一格回傳 `restart`，`playback_start_frame = frame` 從第 1 段重播。排程關閉時回傳 `disabled`，輸出與沒有排程時逐 byte 相同。
+4. 呼叫 `WeatherStore.advance(...)`（造訪計時、在段落邊界套用延後的天氣分類），再取天氣 snapshot。
+5. 讀 `MotorStore.snapshot()`（排程啟用時改用排程給的馬達；每台 speed／direction）與 `HardwareStore.moon_correction()`；API 的變更從下一格生效。每台的**虛擬轉角**依該台目前的 rpm 累加（stop 為 0、ccw 為負），作為 `world-upper-half` 的相位估計（`virtualPhaseRadians`，`render_frame` 的 `rpm=0`）。
+6. 對每個 unit（一個 target）算一次、送到它的每個 universe：
    - `frameOffset = (unitId-1) * cloud_step`（僅 `cloudy`）。
-   - 單色測試中 → 整條填測試色；否則串接模式用 `render_sequence_frame`，單一效果用 `render_frame`。
+   - 單色測試中 → 整條填測試色（排程的時段外也一樣）；排程在時段外 → 直接送 `blackout_payload()`；排程要求全暗（時段開始的暖機）→ 全黑像素；否則串接模式用 `render_sequence_frame`，單一效果用 `render_frame`，排程淡出時再乘上亮度倍率。
    - `render_frame`：套 `unitVariation`（`preset_for_unit`）→ 依次數播放時 `frame % cycle` → 加 offset（整台效果除外）→ 若天氣有色盤且 `weatherPalette` 未關，**只換顏色**（漸層效果保留自己的 axis 與 axisChange；純色效果改用色盤的 axis）→ 逐顆 `sample_effect(..., raining)`。
    - `build_payload`（第 2 節）：月亮校正 → 色序與亮度 → 512 bytes，含馬達的速度與方向 channel。
-6. 結束（正常結束、Ctrl+C、SIGTERM、Windows 服務停止，或例外）時，每個 universe 送**兩次**全 0（燈全暗、馬達停），再關閉 client。
+7. 結束（正常結束、Ctrl+C、SIGTERM、Windows 服務停止，或例外）時，每個 universe 送**兩次**全 0（燈全暗、馬達停），再關閉 client。
 
 ### 1.6 串接（Sequence）
 
@@ -138,7 +140,7 @@ sampleEffect(preset, context, elapsedFrame, raining) -> RGB（各通道 0–1）
   - `unit-fade-black`：前半逐台淡出（`unit_fade_weight`），後半一起淡入。
 - `ending`：`hold`（停在最後畫面）、`loop`（最後一段的 transition 接回第一段）、`fade-black`（`seconds` 淡出至黑）。
 - 編譯後每段有 `start`、`duration`、`cycle`、`transition_frames`；渲染時最多兩層（outgoing + current）加權相加。最多 64 段。
-- 串接**不控制馬達**：轉速與方向只能從 API／控制頁手動設定。
+- 串接**不控制馬達**：轉速與方向由 API／控制頁手動設定，或由定時播放（1.8）控制。
 
 ### 1.7 新增效果的檢查清單
 
@@ -147,6 +149,25 @@ sampleEffect(preset, context, elapsedFrame, raining) -> RGB（各通道 0–1）
 3. `frontend/scripts/generateBackendVectors.ts` 的 `ids` 加入新 ID，重新產生 `backend/fixtures/effects_v2.json`（`npx vite-node scripts/generateBackendVectors.ts --write`）。
 4. 前後端測試：`cd frontend && npm test`；`cd backend && uv run --locked python -m unittest discover -s tests -v`。
 5. 更新 `frontend/src/effects/README.md` 與本文件的效果表。
+
+### 1.8 定時播放（Schedule）
+
+權威來源：`backend/moon_observe_backend/schedule.py`（`Scheduler`、`current_window`、`next_show`）；格式見 5.5，前端 `frontend/src/schedule.ts`（同樣的驗證規則與狀態文字）。
+
+```text
+disabled ──啟用──▶ 時段內：spinup（燈全暗、馬達轉）／時段外：off（全 0）
+off ──時段開始──▶ spinup（燈全暗，spinUpSeconds）──▶ play（從第 1 段播放一輪）
+play ──播完一輪──▶ rest（馬達停、燈效繼續循環，restMinutes）──▶ spinup（燈效繼續）──▶ play …
+spinup／play／rest ──時段結束──▶ ending（馬達立即停、燈淡出 endFadeSeconds）──▶ off
+```
+
+- 每格由輸出迴圈呼叫一次；暖機、休息、淡出都用**輸出影格**計數，時段用後端電腦的**本地時間**（`datetime.now()`）判斷，起點包含、終點不包含。
+- 「一輪」= `output.round_length`：串接為所有段落加總；單一效果至少 60 秒並對齊效果週期（與天氣造訪相同）。播放位置達到一輪長度就進入休息。
+- `restMinutes = 0`：馬達一直轉，播完直接從第 1 段重播，不暖機。`spinUpSeconds = 0`：時段開始或休息結束時立即播放。
+- 時段外、休息、結束中的馬達送 `stop` 並保留排程的方向，避免減速時反轉。
+- 程式在時段中途啟動或啟用排程時，和時段開始一樣先暖機再播放。
+- 時段不跨午夜；相鄰的時段（含 `22:00–24:00` 接隔天 `00:00–02:00`）視為同一段連續播放，不會重新暖機。
+- 排程啟用時 `PUT /api/motor` 回 409；單色測試照常可用（時段外也能測燈）；天氣與造訪不受影響。
 
 ---
 
@@ -181,8 +202,8 @@ sampleEffect(preset, context, elapsedFrame, raining) -> RGB（各通道 0–1）
 
 ### 2.3 馬達
 
-- 每台的 speed（`stop`／`mid`／`max`）與 direction（`cw`／`ccw`）只能從 `PUT /api/motor` 手動設定；串接與效果不會改變轉速。
-- 只存在記憶體：後端啟動時一律 `stop`、`cw`。
+- 每台的 speed（`stop`／`mid`／`max`）與 direction（`cw`／`ccw`）從 `PUT /api/motor` 手動設定，或在排程啟用時由排程控制（1.8；排程的設定存在 `schedule.json`）；串接與效果不會改變轉速。
+- 手動設定只存在記憶體：後端啟動時一律 `stop`、`cw`。排程啟用時重新開機後會自動依時段表演。
 - `[motor] rpm = { mid = 130, max = 500 }` 只用於模擬器與相位估計；`max` 由使用者提供，`mid` 依 60／230 比例估計。
 - 控制盒收不到 Art-Net 時**不會**自己停馬達，目前不做額外保護；只保證程式結束時送全 0。
 
@@ -210,6 +231,7 @@ frontend/src/
 ├── backendApi.ts           # 所有 /api 呼叫與回應型別（唯一的 fetch 集中處）
 ├── hardware.ts             # 月亮校正增益（與後端 hardware.moon_correction_gain 相同）
 ├── playbackProgress.ts     # 由 /api/playback 推算目前後端影格（liveBackendFrame）
+├── schedule.ts             # 定時播放的驗證（與後端 schedule.py 相同）、正規化與狀態文字
 ├── styles.css              # 全站唯一樣式表（純 CSS class）
 ├── components/
 │   ├── ControlPanel.tsx    # 右側分頁面板（含 Slider、ColorInput、UnitVariationEditor、AxisChangeEditor）
@@ -218,6 +240,7 @@ frontend/src/
 │   ├── SavedSequenceView.tsx # 後端已儲存串接唯讀檢視（後端控制模式）
 │   ├── PlaybackProgress.tsx  # 後端播放進度
 │   ├── UnitColorTestPanel.tsx # 單色測試
+│   ├── SchedulePanel.tsx   # 定時播放（自行讀寫 /api/schedule、每 2 秒更新狀態）
 │   ├── WeatherPanel.tsx    # 天氣狀態、手動測試、造訪
 │   └── GradientEditor.tsx  # 漸層色點編輯
 ├── effects/                # Effect engine（見第 1 節）
@@ -252,11 +275,11 @@ frontend/src/
     │       ├── .viewport-caption：效果名 · FPS · 第 n 台 rpm 順／逆（或停止）·（後端輸出／本地模擬）·（單色測試中）
     │       └── .diagnostics（6 欄 grid）：Rotor° · Frame · Phase · °/frame · Exposure · Time（都以選取的那台計算）
     └── section.controls（右，ControlPanel）
-        ├── .control-tabs（role=tablist）：效果｜色彩｜串接｜後端｜天氣*｜物理
+        ├── .control-tabs（role=tablist）：效果｜色彩｜串接｜後端｜排程†｜天氣*｜物理
         └── .control-tabpanel（面板內捲動）
 ```
 
-`*` 天氣分頁只在後端已設定 `[weather]` 時出現。直向螢幕或寬度 ≤ 900px：`.workspace` 改為單欄、上下兩列（`1.15fr / 1fr`）。
+`*` 天氣分頁只在後端已設定 `[weather]` 時出現。`†` 排程分頁只在後端控制模式、且後端支援定時播放時出現。直向螢幕或寬度 ≤ 900px：`.workspace` 改為單欄、上下兩列（`1.15fr / 1fr`）。
 
 各分頁內容：
 
@@ -265,7 +288,8 @@ frontend/src/
 | 效果 | Effect 下拉選單、參數 Slider（由 manifest 自動產生，上限依燈數）、`random-leds` 點亮時間模式、各燈台不同數值（unitVariation）、效果說明 |
 | 色彩 | 天氣啟用時：顏色來源〔天氣色盤｜自訂顏色〕、漸層方向、中途切換方向、目前天氣色票、`<details>` 備援顏色；否則：〔純色｜漸層〕、色彩／漸層編輯 |
 | 串接 | 模擬模式：`SequenceEditor`（段落清單、增刪複製移動、播放規則、轉場、結尾、儲存／重新載入）；後端控制模式：`SavedSequenceView`（唯讀＋從頭播放） |
-| 後端 | 播放進度；後端控制模式下：連線狀態（控制器數、燈數 × 台數、版本）、重新讀取／套用、重新播放〔串接｜單一效果〕、`MotorPanel`（送到後端，顯示實際 DMX 值）、單色測試 |
+| 後端 | 播放進度；後端控制模式下：連線狀態（控制器數、燈數 × 台數、版本）、重新讀取／套用、重新播放〔串接｜單一效果〕、`MotorPanel`（送到後端，顯示實際 DMX 值；排程啟用時唯讀）、單色測試 |
+| 排程 | `SchedulePanel`：目前階段與倒數、後端時間與今天的時段、啟用開關、休息／暖機／結束淡出、表演時每台的馬達、每日時段、特殊日期（多段或「當天不表演」，過期變灰）；儲存前即時驗證 |
 | 天氣 | `WeatherPanel`：目前天氣與來源、手動測試天氣（類別＋氣溫，10 分鐘）、立即造訪／結束造訪、色盤頁連結 |
 | 物理 | 模擬模式下的 `MotorPanel`（只影響 3D 畫面）、Mid speed、Max speed、Controller rate、Camera exposure、Visual persistence、Temporal samples；「全部」視角時另有 Unit phase step、Effect frame step（有天氣時停用） |
 
@@ -301,19 +325,21 @@ frontend/src/
 |---|---|---|---|
 | GET | `/api/state` | `{revision, preset, motor, hardware, output}`（見下） | 目前單一效果、馬達、硬體與輸出設定；`revision` 只計算 preset 的變更 |
 | PUT | `/api/preset` | EffectPreset v2 → 完整 state | 寫入 `preset.json` 並切到單一效果模式 |
-| PUT | `/api/motor` | `{"unitIds"?: [1..N], "speed"?: "stop"\|"mid"\|"max", "direction"?: "cw"\|"ccw"}` → 完整 state | 至少給 speed 或 direction；省略 `unitIds` = 全部；沒給的欄位維持原值。只存在記憶體 |
+| PUT | `/api/motor` | `{"unitIds"?: [1..N], "speed"?: "stop"\|"mid"\|"max", "direction"?: "cw"\|"ccw"}` → 完整 state | 至少給 speed 或 direction；省略 `unitIds` = 全部；沒給的欄位維持原值。只存在記憶體。排程啟用時 409 |
 | PUT | `/api/hardware` | `{"moonCorrection": bool}` → 完整 state | 月亮校正開關，只存在記憶體 |
 | GET | `/api/sequence` | `{revision, sequence, playbackMode, output:{fps,pixels,unitCount,motorRpm}}` | 讀串接 |
 | PUT | `/api/sequence` | Sequence v1 | 原子覆寫 `sequence.json`，切回串接模式並從頭播放 |
 | PUT | `/api/playback/restart` | `{"source":"sequence"\|"single"}` | 從第 0 影格重播，不改檔 |
-| GET | `/api/playback` | `{active:false}` 或 `{active, mode, restart, fps, ageMs, frame, motor:[{speed,direction}×N], ...}` | 輸出迴圈目前位置；串接含 step/transition/ending，單一含 cycle；單色測試時附 `unitColors` |
+| GET | `/api/playback` | `{active:false}` 或 `{active, mode, restart, fps, ageMs, frame, motor:[{speed,direction}×N], schedule:{enabled,phase,round}, ...}` | 輸出迴圈目前位置；串接含 step/transition/ending，單一含 cycle；單色測試時附 `unitColors`；`motor` 是實際送出的值（排程啟用時為排程的馬達） |
+| GET | `/api/schedule` | `{revision, schedule, status}` | 排程（Schedule v1，檔案不存在時為關閉的預設）與狀態：`status = {now, running, phase, round, phaseEndsAt, window, today, nextShowAt}`；`phase` 為 `disabled`／`off`／`spinup`／`play`／`rest`／`ending`，輸出迴圈沒在跑時為 `null` |
+| PUT | `/api/schedule` | Schedule v1 → 同 GET | 原子覆寫 `schedule.json`，下一格依新設定判斷階段 |
 | GET | `/api/weather` | 天氣 snapshot（見 6.4）或 `{"enabled":false}` | |
 | PUT/DELETE | `/api/weather/override` | `{"category":"clear"\|"cloudy"\|"rain","temperatureC":-100..70}` | 手動測試天氣 10 分鐘（直接影響實機） |
 | PUT/DELETE | `/api/weather/visit` | `{"index": n}` | 立即造訪／結束造訪 |
 | GET/PUT | `/api/weather/palette` | Palette v1 | 讀／原子覆寫色盤 |
 | GET/PUT/DELETE | `/api/test/units` | `{"colors":[{r,g,b}\|null × unitCount],"seconds":1..86400\|null}` | 單色測試，只在記憶體 |
 
-`/api/state` 的三個區塊：
+`/api/state` 的區塊（另有 `schedule: {enabled, phase, round}`）：
 
 ```text
 motor:    {revision, channels:{speed:457, direction:458},
@@ -323,7 +349,7 @@ hardware: {colorOrder, brightness, moonCorrection, moonCorrectionDefault, pixels
 output:   {fps, pixels, unitCount, motorRpm:{mid,max}, sourceIp, targets:[{unitId, ip, universes}]}
 ```
 
-PUT 規則：`Content-Type` 必須 `application/json`（否則 415）；Body 大小上限依路徑（preset 16 KiB、sequence 256 KiB、palette 16 KiB、units 4 KiB、motor 256 B、hardware 64 B、其餘 64–256 B，超過或空的 413）；驗證失敗 422 `{"error"}`；寫檔失敗 500；功能未啟用（如沒設 `[weather]`）回 404。成功回 200 與新狀態。參考系統的 `{"enabled": bool}` 馬達命令已移除（422）。
+PUT 規則：`Content-Type` 必須 `application/json`（否則 415）；Body 大小上限依路徑（preset 16 KiB、sequence 256 KiB、schedule 64 KiB、palette 16 KiB、units 4 KiB、motor 256 B、hardware 64 B、其餘 64–256 B，超過或空的 413）；驗證失敗 422 `{"error"}`；排程啟用時的馬達命令 409；寫檔失敗 500；功能未啟用（如沒設 `[weather]`）回 404。成功回 200 與新狀態。參考系統的 `{"enabled": bool}` 馬達命令已移除（422）。
 
 ### 4.3 輪詢與同步
 
@@ -332,11 +358,12 @@ PUT 規則：`Content-Type` 必須 `application/json`（否則 415）；Body 大
 | `/api/playback` | 每 1 秒（頁面隱藏時暫停；套用／儲存／馬達命令後立即重新輪詢） | `App.tsx` |
 | `/api/weather` | 每 5 秒 | `App.tsx`、`PaletteApp.tsx` |
 | `/api/test/units` | 測試期間依剩餘時間 | `UnitColorTestPanel.tsx` |
+| `/api/schedule` | 「排程」分頁開著時每 2 秒（沒有未儲存的變更時草稿跟著更新） | `SchedulePanel.tsx` |
 | `/api/state` + `/api/sequence` | 切到後端控制、按重新讀取，或 `/api/playback` 的 `restart` 計數改變時 | `App.tsx` |
 
 - 前端在兩次輪詢之間用 `fps` 與 `ageMs` 自行推進後端影格（`playbackProgress.ts:liveBackendFrame`）；超過 `PLAYBACK_STALE_MS = 5000` 視為過期。
 - 天氣 `generation` 改變 → 前端模擬也從頭播放（對齊後端重播）。
-- 版本相容：前端把某些 API 的 404 視為「舊版後端沒有此功能」（`getBackendPlayback`、`getUnitColorTest` 回 `null`），新增 API 時沿用此模式。
+- 版本相容：前端把某些 API 的 404 視為「舊版後端沒有此功能」（`getBackendPlayback`、`getUnitColorTest`、`getBackendSchedule` 回 `null`），新增 API 時沿用此模式。
 
 ### 4.4 後端對硬體
 
@@ -356,8 +383,9 @@ PUT 規則：`Content-Type` 必須 `application/json`（否則 415）；Body 大
 | `preset.json` | EffectPreset v2 JSON | `PUT /api/preset` | `effects.validate_preset` | 否（範本 `backend/preset.example.json`） |
 | `sequence.json` | Sequence v1 JSON | `PUT /api/sequence`；不存在時以目前 preset 建立 8 秒單段 | `sequence.validate_sequence` | 否（範本 `backend/sequence.example.json`） |
 | `palette.json` | Palette v1 JSON | `PUT /api/weather/palette`；不存在時用內建三段 | `palette.validate_palette` | 否 |
+| `schedule.json` | Schedule v1 JSON | `PUT /api/schedule`；不存在時為關閉的預設（不寫檔） | `schedule.validate_schedule` | 否（範本 `backend/schedule.example.json`） |
 
-- `preset`、`sequence`、`palette` 路徑寫在 TOML，**相對於 TOML 檔所在目錄**。
+- `preset`、`sequence`、`palette`、`schedule` 路徑寫在 TOML，**相對於 TOML 檔所在目錄**；`schedule` 省略時放在 `sequence.json` 同一個資料夾。
 - JSON 寫入一律**原子化**：同目錄 `tempfile` → `fsync` → `os.replace`；以 UTF-8、`indent=2`、`ensure_ascii=False` 輸出正規化內容。並發編輯以最後儲存者為準。
 - 驗證嚴格：多餘欄位、型別錯誤、超出範圍都拒絕；`run.py --check` 只驗證 TOML/JSON 不送出。
 - **只在記憶體、重啟即消失**：馬達狀態（重啟一律停止）、月亮校正開關（重啟回到 config）、單一效果模式（重啟回串接模式）、天氣手動測試、造訪狀態、單色測試。
@@ -377,6 +405,7 @@ universes = [0, 1]          # 1..4 個，0..32767；也可寫單一 universe = 0
 [render]
 preset = "preset.json"      # 必填
 sequence = "sequence.json"  # 預設 sequence.json
+# schedule = "schedule.json" # 定時播放；省略時為 sequence.json 同資料夾的 schedule.json
 fps = 40                    # 1..120，預設 40
 pixels = 152                # 1..170，預設 152；pixels × 3 必須小於兩個馬達 channel
 unit_count = 5              # 1..9，預設 5
@@ -447,13 +476,37 @@ longitude = 139.6503
 - `axis` 只允許 `strip`／`radius`，且只用於純色效果（漸層效果保留自己的方向）。
 - 內建預設（`palette.DEFAULT_PALETTE`）：<18°C 冷色、18–27°C 中性、≥28°C 暖色。
 
-### 5.5 部署位置（Windows）
+### 5.5 Schedule v1
+
+```json
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "restMinutes": 10,
+  "spinUpSeconds": 5,
+  "endFadeSeconds": 3,
+  "motors": [{ "unitId": 1, "speed": "max", "direction": "cw" }],
+  "daily": [{ "start": "18:00", "end": "20:00" }],
+  "dates": [
+    { "date": "2026-11-05", "windows": [{ "start": "14:00", "end": "21:00" }] },
+    { "date": "2026-11-10", "windows": [] }
+  ]
+}
+```
+
+- 八個欄位缺一不可；`restMinutes` 0–240 的整數；`spinUpSeconds` 0–30；`endFadeSeconds` 0–10。
+- `motors`：每台一筆（`unitId` 1..N 不重複），`speed` 只能 `mid`／`max`，`direction` 為 `cw`／`ccw`。
+- 時段 `HH:MM`，`start` 00:00–23:59、`end` 最晚 `24:00` 且晚於 `start`；同一天最多 8 段、不能重疊（可以相鄰）。
+- `dates`：最多 400 天、`YYYY-MM-DD` 不重複；有列出的日期**取代**當天的 `daily`，`windows: []` = 當天不表演。
+- 正規化時 `motors` 依 `unitId`、時段依開始時間、`dates` 依日期排序；過期日期保留。行為見 1.8。
+
+### 5.6 部署位置（Windows）
 
 權威來源：`backend/deploy/README.md`、`backend/deploy/install-release.ps1`。
 
 - 程式：`C:\MoonObserve\releases\<版本>\`，`C:\MoonObserve\current` 是指向使用中版本的 junction；前端 `dist` 與 WinSW 一起打包成 `moon-observe-<版本>-windows.zip`。
 - 服務：WinSW（`C:\MoonObserve\service\MoonObserve.exe` + `.xml`），帳號 `NT AUTHORITY\LocalService`、延遲自動啟動、異常結束自動重啟。
-- 設定與可寫資料：`C:\ProgramData\MoonObserve\config.toml`（服務唯讀）、`preset\`（服務唯一可寫的設定資料夾）、`logs\`。TOML 的 `render.preset`、`render.sequence`、`weather.palette` 都要指到 `preset\` 底下，否則 API 存檔會失敗；首次安裝產生的 config 已經這樣設定。
+- 設定與可寫資料：`C:\ProgramData\MoonObserve\config.toml`（服務唯讀）、`preset\`（服務唯一可寫的設定資料夾）、`logs\`。TOML 的 `render.preset`、`render.sequence`、`weather.palette` 都要指到 `preset\` 底下，否則 API 存檔會失敗；首次安裝產生的 config 已經這樣設定。`schedule.json` 預設跟著 `sequence.json` 放在 `preset\`，舊的 config 不用修改。
 - 升級不覆寫 config 與 `preset\`；新設定欄位需手動加入。升級失敗（含新版起不來）會自動回退到前一版。
 
 ---

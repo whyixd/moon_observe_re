@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "restMinutes": 10,
+  "spinUpSeconds": 5,
+  "endFadeSeconds": 3,
+  "motors": [
+    {
+      "unitId": 1,
+      "speed": "max",
+      "direction": "cw"
+    },
+    {
+      "unitId": 2,
+      "speed": "max",
+      "direction": "cw"
+    },
+    {
+      "unitId": 3,
+      "speed": "max",
+      "direction": "cw"
+    },
+    {
+      "unitId": 4,
+      "speed": "max",
+      "direction": "cw"
+    },
+    {
+      "unitId": 5,
+      "speed": "max",
+      "direction": "cw"
+    }
+  ],
+  "daily": [
+    {
+      "start": "18:00",
+      "end": "20:00"
+    }
+  ],
+  "dates": [
+    {
+      "date": "2026-11-05",
+      "windows": [
+        {
+          "start": "14:00",
+          "end": "21:00"
+        }
+      ]
+    },
+    {
+      "date": "2026-11-10",
+      "windows": []
+    }
+  ]
+}

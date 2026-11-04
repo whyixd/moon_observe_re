@@ -602,3 +602,29 @@ input[type="range"] {
 .unit-color-off .unit-color-toggle { color: #7d8a98; }
 .unit-color-presets button { flex: 1 1 auto; }
 .unit-color-idle { color: #7d8a98; font-size: 0.8rem; }
+
+/* 定時播放 / Timed shows */
+.schedule-controls { display: grid; gap: 0.6rem; }
+.schedule-controls > .control-label { margin-top: 0.6rem; }
+.schedule-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.schedule-numbers .sequence-field { margin-top: 0; font-size: 0.78rem; }
+.schedule-motor-row { margin-top: 0; }
+.schedule-motor-row .motor-speeds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.schedule-windows { display: grid; gap: 0.35rem; }
+.schedule-window-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; gap: 0.4rem; align-items: center; color: #8093a8; }
+.schedule-window-row input, .schedule-date-head input[type="date"] {
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid #303a48;
+  border-radius: 0.45rem;
+  color: #eef4fb;
+  background: #111721;
+  color-scheme: dark;
+}
+.schedule-add { justify-self: start; }
+.schedule-dates { display: grid; gap: 0.6rem; margin: 0; padding: 0; list-style: none; }
+.schedule-dates li { display: grid; gap: 0.4rem; padding: 0.6rem; border: 1px solid #242c37; border-radius: 0.55rem; }
+.schedule-dates li small { color: #7d8a98; font-size: 0.72rem; }
+.schedule-date-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0.5rem; align-items: center; }
+.schedule-past { opacity: 0.55; }
+.schedule-problems { margin: 0; padding-left: 1.1rem; }

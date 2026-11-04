@@ -19,6 +19,7 @@ import type { CompiledSequence, PlaybackRule, SequenceDocument, SequenceEnding, 
 import { ColorInput, GradientEditor } from './GradientEditor'
 import { PlaybackProgress } from './PlaybackProgress'
 import { SavedSequenceView } from './SavedSequenceView'
+import { SchedulePanel } from './SchedulePanel'
 import { SequenceEditor } from './SequenceEditor'
 import { UnitColorTestPanel } from './UnitColorTestPanel'
 import { CATEGORY_LABELS, WeatherPanel } from './WeatherPanel'
@@ -26,7 +27,7 @@ import type { MotorRpm, SceneMode, SimulationSettings, UnitMotor } from '../simu
 import { MotorPanel } from './MotorPanel'
 
 type NumericSetting = Exclude<keyof SimulationSettings, 'ledCount' | 'unitCount' | 'motorRpm'>
-type ControlTab = 'effect' | 'color' | 'sequence' | 'backend' | 'weather' | 'physics'
+type ControlTab = 'effect' | 'color' | 'sequence' | 'backend' | 'schedule' | 'weather' | 'physics'
 
 type ControlPanelProps = {
   settings: SimulationSettings
@@ -426,15 +427,22 @@ export function ControlPanel({
     onEffectColor(enabled ? color : { ...color, weatherPalette: false })
   }
 
+  // 排程啟用時馬達由排程控制；/api/playback 較即時，沒有時用最近一次的 /api/state。
+  // While the schedule is enabled it drives the motors; /api/playback is fresher, /api/state the fallback.
+  const scheduleAvailable = controlMode === 'backend' && backendState?.schedule !== undefined
+  const scheduleSummary = (playback && playback.active ? playback.schedule : undefined) ?? backendState?.schedule
+  const scheduled = scheduleAvailable && scheduleSummary?.enabled === true
+
   const tabs: { id: ControlTab, label: string }[] = [
     { id: 'effect', label: '效果' },
     { id: 'color', label: '色彩' },
     { id: 'sequence', label: '串接' },
     { id: 'backend', label: '後端' },
+    ...(scheduleAvailable ? [{ id: 'schedule' as const, label: '排程' }] : []),
     ...(weather ? [{ id: 'weather' as const, label: '天氣' }] : []),
     { id: 'physics', label: '物理' },
   ]
-  const shownTab = tab === 'weather' && !weather ? 'effect' : tab
+  const shownTab = (tab === 'weather' && !weather) || (tab === 'schedule' && !scheduleAvailable) ? 'effect' : tab
 
   return (
     <section className="controls" aria-label="控制面板">
@@ -637,7 +645,7 @@ export function ControlPanel({
             </div>
             {backendState && (
               <MotorPanel mode="backend" motors={motors} moonCorrection={moonCorrection}
-                backendMotor={backendState.motor} disabled={backendBusy}
+                backendMotor={backendState.motor} disabled={backendBusy} scheduled={scheduled}
                 onMotor={onMotor} onMoonCorrection={onMoonCorrection} />
             )}
             {backendState && <UnitColorTestPanel unitCount={backendState.output.unitCount} onChange={onUnitColorTest} />}
@@ -645,6 +653,8 @@ export function ControlPanel({
         ) : (
           <p className="control-note">切換到上方的「後端控制」後，才能連線、套用效果與控制馬達。</p>
         ))}
+
+        {shownTab === 'schedule' && scheduleAvailable && <SchedulePanel onSaved={onRefreshBackend} />}
 
         {shownTab === 'weather' && weather && <WeatherPanel weather={weather} onWeather={onWeather} />}
 

@@ -273,7 +273,15 @@ class SequenceStore:
                 }],
             }, pixels, fps, unit_count)
             self._write(self.raw)
-        self.compiled = compile_sequence(self.raw, fps, unit_count, pixels)
+        self.compiled, self.compiled_loop = self._compile(self.raw)
+
+    def _compile(self, document: Mapping[str, Any]) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
+        """The document as saved, and a copy that always loops (timed shows keep the lights playing)."""
+        compiled = compile_sequence(document, self.fps, self.unit_count, self.pixels)
+        if document["ending"]["kind"] == "loop":
+            return compiled, compiled
+        looped = compile_sequence({**document, "ending": {"kind": "loop"}}, self.fps, self.unit_count, self.pixels)
+        return compiled, looped
 
     def _write(self, document: Mapping[str, Any]) -> None:
         encoded = (json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
@@ -294,17 +302,19 @@ class SequenceStore:
         with self.lock:
             return {"revision": self.revision, "sequence": copy.deepcopy(self.raw), "playbackMode": self.mode}
 
-    def snapshot(self) -> tuple[str, tuple[dict[str, Any], ...], int]:
+    def snapshot(self, loop: bool = False) -> tuple[str, tuple[dict[str, Any], ...], int]:
+        """``loop`` ignores the saved ending and always loops (used while a timed show is enabled)."""
         with self.lock:
-            return self.mode, self.compiled, self.generation
+            return self.mode, self.compiled_loop if loop else self.compiled, self.generation
 
     def apply(self, raw: Any) -> dict[str, Any]:
         document = validate_sequence(raw, self.pixels, self.fps, self.unit_count)
-        compiled = compile_sequence(document, self.fps, self.unit_count, self.pixels)
+        compiled, compiled_loop = self._compile(document)
         with self.lock:
             self._write(document)
             self.raw = document
             self.compiled = compiled
+            self.compiled_loop = compiled_loop
             self.revision += 1
             self.generation += 1
             self.mode = "sequence"

@@ -31,11 +31,56 @@ export type BackendHardwareState = {
 
 export type BackendTarget = { unitId: number; ip: string; universes: number[] }
 
+export type SchedulePhase = 'disabled' | 'off' | 'spinup' | 'play' | 'rest' | 'ending'
+
+/** 定時播放的輕量狀態（/api/state、/api/playback）。 / Lightweight timed-show state. */
+export type ScheduleSummary = {
+  enabled: boolean
+  /** null：輸出迴圈沒在跑（--api-only）。 / null when the output loop is not running. */
+  phase: SchedulePhase | null
+  round: number | null
+}
+
+export type ScheduleWindow = { start: string; end: string }
+
+export type ScheduleMotor = { unitId: number; speed: Exclude<MotorSpeed, 'stop'>; direction: MotorDirection }
+
+export type ScheduleDocument = {
+  schemaVersion: 1
+  enabled: boolean
+  restMinutes: number
+  spinUpSeconds: number
+  endFadeSeconds: number
+  motors: ScheduleMotor[]
+  daily: ScheduleWindow[]
+  dates: { date: string; windows: ScheduleWindow[] }[]
+}
+
+export type ScheduleStatus = {
+  /** 後端本地時間（ISO，無時區）。 / Backend local time (ISO, no zone). */
+  now: string
+  running: boolean
+  phase: SchedulePhase | null
+  round: number | null
+  phaseEndsAt: string | null
+  window: ScheduleWindow | null
+  today: ScheduleWindow[]
+  nextShowAt: string | null
+}
+
+export type BackendScheduleState = {
+  revision: number
+  schedule: ScheduleDocument
+  status?: ScheduleStatus
+}
+
 export type BackendState = {
   revision: number
   preset: EffectPreset
   motor: BackendMotorState
   hardware: BackendHardwareState
+  /** 舊版後端沒有。 / Older backends omit it. */
+  schedule?: ScheduleSummary
   output: {
     fps: number
     pixels: number
@@ -117,6 +162,21 @@ export async function restartBackendPlayback(source: 'sequence' | 'single'): Pro
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source }),
+  }))
+}
+
+// null：後端版本沒有定時播放。 / null: the backend predates timed shows.
+export async function getBackendSchedule(): Promise<BackendScheduleState | null> {
+  const response = await fetch('/api/schedule', { cache: 'no-store' })
+  if (response.status === 404) return null
+  return readState<BackendScheduleState>(response)
+}
+
+export async function saveBackendSchedule(schedule: ScheduleDocument): Promise<BackendScheduleState> {
+  return readState<BackendScheduleState>(await fetch('/api/schedule', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(schedule),
   }))
 }
 
@@ -241,6 +301,7 @@ type ActivePlaybackBase = {
   unitColors?: (RgbColor | null)[]
   /** 每台目前的馬達狀態（依 unitId 排列）。 / Each unit's current motor state, ordered by unitId. */
   motor?: UnitMotor[]
+  schedule?: ScheduleSummary
 }
 
 export type SequencePlayback = ActivePlaybackBase & {
