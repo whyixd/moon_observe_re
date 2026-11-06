@@ -9,8 +9,6 @@ import {
 } from '../backendApi'
 import {
   MAX_DATES,
-  MAX_END_FADE_SECONDS,
-  MAX_REST_MINUTES,
   MAX_SPIN_UP_SECONDS,
   MAX_WINDOWS_PER_DAY,
   describeStatus,
@@ -62,8 +60,8 @@ function WindowList({ windows, onChange }: { windows: ScheduleWindow[]; onChange
   )
 }
 
-// 定時播放：每日／特殊日期時段，播一輪後休息（只停馬達），休息後先暖機再從第 1 段播放。
-// Timed shows: daily / per-date windows; rest after each round (motors only), spin up, then replay from step 1.
+// 定時播放：燈光全天循環；馬達只在每日／特殊日期時段內運轉，對齊燈光的輪次。
+// Timed shows: lights loop all day; motors spin only in the daily / per-date windows, aligned to rounds.
 export function SchedulePanel({ onSaved }: { onSaved?: () => void }) {
   const [state, setState] = useState<BackendScheduleState | null | undefined>(undefined)
   const [draft, setDraft] = useState<ScheduleDocument | null>(null)
@@ -179,30 +177,20 @@ export function SchedulePanel({ onSaved }: { onSaved?: () => void }) {
 
       <div className="schedule-numbers">
         <label className="sequence-field">
-          休息（分鐘，0 = 連續播放）
-          <input type="number" min={0} max={MAX_REST_MINUTES} step={1} value={Number.isNaN(draft.restMinutes) ? '' : draft.restMinutes}
-            onChange={(event) => edit({ restMinutes: numberInput(event.target.value) })} />
-        </label>
-        <label className="sequence-field">
-          暖機（秒）
+          馬達提前啟動（秒，在燈光那一輪開始前）
           <input type="number" min={0} max={MAX_SPIN_UP_SECONDS} step={0.5} value={Number.isNaN(draft.spinUpSeconds) ? '' : draft.spinUpSeconds}
             onChange={(event) => edit({ spinUpSeconds: numberInput(event.target.value) })} />
         </label>
-        <label className="sequence-field">
-          結束淡出（秒）
-          <input type="number" min={0} max={MAX_END_FADE_SECONDS} step={0.5} value={Number.isNaN(draft.endFadeSeconds) ? '' : draft.endFadeSeconds}
-            onChange={(event) => edit({ endFadeSeconds: numberInput(event.target.value) })} />
-        </label>
       </div>
 
-      <span className="control-label">表演時的馬達</span>
+      <span className="control-label">時段內的馬達</span>
       {motorRow('全部', allMotor, draft.motors.map((motor) => motor.unitId))}
       {draft.motors.map((motor) => motorRow(`第 ${motor.unitId} 台`, motor, [motor.unitId]))}
 
       <span className="control-label">每日時段</span>
       <WindowList windows={draft.daily} onChange={(daily) => edit({ daily })} />
 
-      <span className="control-label">特殊日期（取代當天的每日時段）</span>
+      <span className="control-label">特殊日期（取代當天的每日時段；當天不表演 = 馬達整天不轉）</span>
       <ul className="schedule-dates">
         {draft.dates.map((entry, index) => (
           <li key={index} className={entry.date < today ? 'schedule-past' : undefined}>
@@ -241,9 +229,9 @@ export function SchedulePanel({ onSaved }: { onSaved?: () => void }) {
       </div>
       {error && <p className="backend-error" role="alert">{error}</p>}
       <p className="control-note">
-        時段內：馬達先暖機，再從串接第 1 段播放一輪；播完後休息（馬達停、燈效繼續），休息結束先暖機再重新播放。
-        時段開始時暖機期間燈維持全暗；時段結束時馬達立即停止、燈光淡出，時段外燈全暗、馬達停止。
-        排程啟用時串接一律循環播放。時間依後端電腦的本地時間；時段不能跨午夜，跨夜請拆成兩天（例如 22:00–24:00 與隔天 00:00–02:00，會接續播放）。
+        排程啟用時燈光全天循環播放串接，排程只控制馬達：在「涵蓋時段開始時間的那一輪」（開始時間或之前最近的一輪開頭）
+        前幾秒先啟動，一直運轉到時段結束；結束時若這一輪還沒播完，播完才停。時段外馬達停止、燈光照常。
+        時間依後端電腦的本地時間；時段不能跨午夜，跨夜請拆成兩天（例如 22:00–24:00 與隔天 00:00–02:00，會接續運轉）。
       </p>
     </div>
   )

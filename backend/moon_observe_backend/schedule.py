@@ -1,8 +1,9 @@
-"""Timed shows: daily and per-date show windows, play one round, rest with motors stopped, spin up, repeat.
+"""Timed shows: the lights play all day; the motors spin only during the show windows, aligned to rounds.
 
-定時播放：表演時段內「暖機 → 播放一輪 → 休息（只停馬達）→ 暖機 → …」，時段外送全 0。
-The document is stored in ``schedule.json`` (atomic writes); the state machine is advanced by the output loop
-once per frame, so every duration except the show windows is counted in output frames.
+定時播放：排程啟用時燈光全天循環播放；馬達只在表演時段內運轉，並對齊燈光的「輪」：
+在「涵蓋時段開始時間的那一輪」開始前 spinUpSeconds 秒先啟動，一直轉到時段結束；時段結束時若一輪還沒播完，
+播完這一輪才停。The document is stored in ``schedule.json`` (atomic writes); the state machine is advanced by
+the output loop once per frame, and round boundaries come from the playback position.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import copy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -21,14 +23,14 @@ from typing import Any, Callable, Mapping
 
 from .hardware import DIRECTIONS
 
-SCHEDULE_SCHEMA_VERSION = 1
-SCHEDULE_FIELDS = {"schemaVersion", "enabled", "restMinutes", "spinUpSeconds", "endFadeSeconds", "motors", "daily", "dates"}
-SCHEDULE_SPEEDS = ("mid", "max")  # A show always spins; "stop" is what rest and off use.
+SCHEDULE_SCHEMA_VERSION = 2
+SCHEDULE_FIELDS = {"schemaVersion", "enabled", "spinUpSeconds", "motors", "daily", "dates"}
+# v1 (v0.2.0) also had rest and end-fade settings; they are dropped when a v1 file is read.
+LEGACY_V1_FIELDS = {"restMinutes", "endFadeSeconds"}
+SCHEDULE_SPEEDS = ("mid", "max")  # A show always spins; "stop" is what the motors do outside the windows.
 MAX_WINDOWS_PER_DAY = 8
 MAX_DATES = 400
-MAX_REST_MINUTES = 240
 MAX_SPIN_UP_SECONDS = 30
-MAX_END_FADE_SECONDS = 10
 NEXT_SHOW_HORIZON_DAYS = 400
 _TIME = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -40,20 +42,16 @@ def default_schedule(unit_count: int) -> dict[str, Any]:
     return {
         "schemaVersion": SCHEDULE_SCHEMA_VERSION,
         "enabled": False,
-        "restMinutes": 10,
         "spinUpSeconds": 5,
-        "endFadeSeconds": 3,
         "motors": [{"unitId": unit_id, "speed": "max", "direction": "cw"} for unit_id in range(1, unit_count + 1)],
         "daily": [{"start": "18:00", "end": "20:00"}],
         "dates": [],
     }
 
 
-def _number(value: Any, name: str, maximum: float, *, integer: bool = False) -> int | float:
-    if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)) \
-            or value != value or not 0 <= value <= maximum:
-        kind = "an integer" if integer else "a number"
-        raise ValueError(f"{name} must be {kind} in 0..{maximum:g}")
+def _number(value: Any, name: str, maximum: float) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or not 0 <= value <= maximum:
+        raise ValueError(f"{name} must be a number in 0..{maximum:g}")
     return value
 
 
@@ -85,6 +83,11 @@ def _windows(raw: Any, name: str) -> list[dict[str, str]]:
 
 
 def validate_schedule(raw: Any, unit_count: int) -> dict[str, Any]:
+    """Strict check; a v1 document (v0.2.0) is accepted and returned as v2 without its rest/fade settings."""
+    if isinstance(raw, dict) and type(raw.get("schemaVersion")) is int and raw["schemaVersion"] == 1 \
+            and set(raw) == SCHEDULE_FIELDS | LEGACY_V1_FIELDS:
+        raw = {key: value for key, value in raw.items() if key not in LEGACY_V1_FIELDS}
+        raw["schemaVersion"] = SCHEDULE_SCHEMA_VERSION
     if not isinstance(raw, dict) or set(raw) != SCHEDULE_FIELDS:
         raise ValueError(f"schedule must contain exactly {', '.join(sorted(SCHEDULE_FIELDS))}")
     if type(raw["schemaVersion"]) is not int or raw["schemaVersion"] != SCHEDULE_SCHEMA_VERSION:
@@ -126,9 +129,7 @@ def validate_schedule(raw: Any, unit_count: int) -> dict[str, Any]:
     return {
         "schemaVersion": SCHEDULE_SCHEMA_VERSION,
         "enabled": raw["enabled"],
-        "restMinutes": _number(raw["restMinutes"], "schedule restMinutes", MAX_REST_MINUTES, integer=True),
         "spinUpSeconds": _number(raw["spinUpSeconds"], "schedule spinUpSeconds", MAX_SPIN_UP_SECONDS),
-        "endFadeSeconds": _number(raw["endFadeSeconds"], "schedule endFadeSeconds", MAX_END_FADE_SECONDS),
         "motors": [by_unit[unit_id] for unit_id in sorted(by_unit)],
         "daily": _windows(raw["daily"], "schedule daily"),
         "dates": [dates[day] for day in sorted(dates)],
@@ -219,26 +220,21 @@ class ScheduleStore:
 
 @dataclass(frozen=True)
 class ScheduleFrame:
-    """What the output loop does this frame.
-
-    ``motors`` None means the manual motor store decides (schedule disabled). ``light`` scales the rendered
-    pixels (0 = dark). ``restart`` replays the sequence from step 1 starting this frame. ``blackout`` sends the
-    all-zero frame (outside the show windows).
-    """
+    """What the output loop does this frame: ``motors`` None means the manual motor store decides (disabled).
+    The schedule never touches the lights."""
 
     phase: str
     motors: Motors | None
-    light: float
-    restart: bool
-    blackout: bool
 
 
 class Scheduler:
-    """Show state machine, advanced once per output frame by ``output.stream``.
+    """Motor state machine, advanced once per output frame by ``output.stream``.
 
-    disabled → (enabled) → spinup (dark) → play → rest → spinup (lit) → play → …; leaving the show window from
-    any show phase → ending (motors stop, lights fade) → off (all zero). Spin-up, rest and the end fade count
-    output frames; a round ends when the playback position reaches the round length.
+    off → spinup (motors start ``spinUpSeconds`` before the round that covers the window start) → run (until
+    the window ends) → finishing (the window ended mid-round: finish that round) → off. Starting mid-window
+    (or enabling then) spins at once. Rounds are the looping playback: a round starts whenever the playback
+    position is a multiple of the round length, so a playback restart (sequence edit, test weather) moves
+    the boundaries and the next ones are recomputed from the new position.
     """
 
     def __init__(self, store: ScheduleStore, fps: int, unit_count: int,
@@ -250,84 +246,78 @@ class Scheduler:
         self.clock = clock
         self.lock = Lock()
         self.phase = "disabled"
-        self.elapsed = 0          # Output frames spent in the current phase.
-        self.round = 0            # Rounds started in the current show window.
-        self.lit_spinup = False   # Spin-up after a rest keeps the lights playing; after "off" it stays dark.
-        self.fade_from = 1.0      # Light level when the end fade began.
-        self._sample: tuple[str, int, int | None, Motors | None, float] | None = None
-
-    def _frames(self, seconds: float) -> int:
-        return max(0, round(seconds * self.fps))
+        self.armed_for: datetime | None = None   # Window start the motors already started for (kept on).
+        self.finish_round: int | None = None     # Round index being finished after the window ended.
+        self.last_playback = 0
+        self._next_cache: tuple[Mapping[str, Any], datetime, datetime | None] | None = None
+        # (phase, frames to phase end, motors, clock, frames to the next motor start, governing window)
+        self._sample: tuple[str, int | None, Motors | None, float, int | None,
+                            tuple[datetime, datetime] | None] | None = None
 
     def _motors(self, document: Mapping[str, Any], spinning: bool) -> Motors:
         return tuple((motor["speed"] if spinning else "stop", motor["direction"]) for motor in document["motors"])
 
-    def _enter(self, phase: str) -> None:
-        self.phase = phase
-        self.elapsed = 0
+    def _next_show(self, document: Mapping[str, Any], now: datetime) -> datetime | None:
+        """next_show, cached per document and minute (window starts are whole minutes)."""
+        minute = now.replace(second=0, microsecond=0)
+        cache = self._next_cache
+        if cache is None or cache[0] is not document or cache[1] != minute \
+                or (cache[2] is not None and cache[2] <= now):
+            cache = (document, minute, next_show(document, now))
+            self._next_cache = cache
+        return cache[2]
 
-    def advance(self, frames: int, round_frames: int, playback_frame: int) -> ScheduleFrame:
+    def advance(self, round_frames: int, playback_frame: int) -> ScheduleFrame:
         document = self.store.snapshot()
         if not document["enabled"]:
-            self._enter("disabled")
-            return self._publish(document, ScheduleFrame("disabled", None, 1.0, False, False), None)
-        in_window = current_window(document, self.now()) is not None
-        spin_frames = self._frames(document["spinUpSeconds"])
-        rest_frames = document["restMinutes"] * 60 * self.fps
-        fade_frames = self._frames(document["endFadeSeconds"])
-        restart = False
-        if self.phase == "disabled":
-            self.round = 0
-            self.lit_spinup = False
-            self._enter("spinup" if in_window else "off")
+            self.phase = "disabled"
+            self.armed_for = None
+            self.finish_round = None
+            return self._publish(ScheduleFrame("disabled", None), None, None, None)
+        now = self.now()
+        length = max(1, round_frames)
+        position = playback_frame % length
+        window = current_window(document, now)
+        upcoming = None if window is not None else self._next_show(document, now)
+        covering: float | None = None  # Frames until the round that covers the upcoming window start.
+        if upcoming is not None:
+            lead = (upcoming - now).total_seconds() * self.fps
+            covering = math.floor((lead + position) / length) * length - position
+        if self.armed_for is not None and self.armed_for != upcoming:
+            self.armed_for = None
+        spin_frames = document["spinUpSeconds"] * self.fps
+        if upcoming is not None and covering is not None and (self.armed_for == upcoming or covering <= spin_frames):
+            self.armed_for = upcoming
+        previous = self.phase
+        remaining: int | None = None
+        if window is not None:
+            phase = "run"
+        elif self.armed_for is not None:
+            phase = "spinup" if covering is not None and covering > 0 else "run"
+            remaining = math.ceil(covering) if phase == "spinup" else None
+        elif previous == "run" and position != 0:
+            phase = "finishing"
+            self.finish_round = playback_frame // length
+        elif previous == "finishing" and playback_frame >= self.last_playback \
+                and playback_frame // length == self.finish_round:
+            phase = "finishing"
         else:
-            self.elapsed += max(0, frames)
-            if in_window and self.phase in ("off", "ending"):
-                self.round = 0
-                self.lit_spinup = False
-                self._enter("spinup")
-            elif not in_window and self.phase in ("spinup", "play", "rest"):
-                self.fade_from = self._light(1.0)
-                self._enter("ending")
-            elif self.phase == "play" and playback_frame >= round_frames:
-                if rest_frames == 0:
-                    self._enter("spinup")  # Motors never stopped: no spin-up needed, replay at once below.
-                    self.lit_spinup = True
-                    self.elapsed = spin_frames
-                else:
-                    self._enter("rest")
-            elif self.phase == "rest" and self.elapsed >= rest_frames:
-                self.lit_spinup = True
-                self._enter("spinup")
-        # Zero-length phases fall through in the same frame.
-        if self.phase == "spinup" and self.elapsed >= spin_frames:
-            self.round += 1
-            self._enter("play")
-            restart = True
-        if self.phase == "ending" and self.elapsed >= fade_frames:
-            self._enter("off")
-        phase = self.phase
-        if phase == "off":
-            frame = ScheduleFrame(phase, self._motors(document, False), 0.0, False, True)
-        elif phase == "ending":
-            weight = self.fade_from * max(0.0, 1 - (self.elapsed + 1) / fade_frames) if fade_frames else 0.0
-            frame = ScheduleFrame(phase, self._motors(document, False), weight, False, False)
+            phase = "off"
+        if phase == "finishing":
+            remaining = length - position
         else:
-            frame = ScheduleFrame(phase, self._motors(document, phase in ("spinup", "play")),
-                                  self._light(1.0), restart, False)
-        remaining = {
-            "spinup": spin_frames - self.elapsed,
-            "play": round_frames - (0 if restart else playback_frame),
-            "rest": rest_frames - self.elapsed,
-            "ending": fade_frames - self.elapsed,
-        }.get(phase)
-        return self._publish(document, frame, remaining)
+            self.finish_round = None
+        self.phase = phase
+        self.last_playback = playback_frame
+        governing = window if window is not None else (
+            current_window(document, upcoming) if upcoming is not None and phase in ("spinup", "run") else None)
+        start_in = None if phase != "off" or covering is None else max(0, math.ceil(covering - spin_frames))
+        frame = ScheduleFrame(phase, self._motors(document, phase != "off"))
+        return self._publish(frame, remaining, start_in, governing)
 
-    def _light(self, lit: float) -> float:
-        return 0.0 if self.phase == "spinup" and not self.lit_spinup else lit
-
-    def _publish(self, document: Mapping[str, Any], frame: ScheduleFrame, remaining: int | None) -> ScheduleFrame:
-        sample = (frame.phase, self.round, None if remaining is None else max(0, remaining), frame.motors, self.clock())
+    def _publish(self, frame: ScheduleFrame, remaining: int | None, start_in: int | None,
+                 window: tuple[datetime, datetime] | None) -> ScheduleFrame:
+        sample = (frame.phase, remaining, frame.motors, self.clock(), start_in, window)
         with self.lock:
             self._sample = sample
         return frame
@@ -342,37 +332,38 @@ class Scheduler:
             sample = self._sample
         enabled = self.store.enabled()
         phase = sample[0] if sample is not None else ("disabled" if not enabled else None)
-        return {"enabled": enabled, "phase": phase,
-                "round": sample[1] if sample is not None and phase in ("spinup", "play", "rest") and sample[1] else None}
+        return {"enabled": enabled, "phase": phase}
 
     def effective_motors(self) -> Motors | None:
         """Motors the schedule is sending (None when disabled or not running)."""
         with self.lock:
-            return None if self._sample is None else self._sample[3]
+            return None if self._sample is None else self._sample[2]
 
     def status(self) -> dict[str, Any]:
         document = self.store.snapshot()
         now = self.now()
         with self.lock:
             sample = self._sample
-        window = current_window(document, now)
         upcoming = next_show(document, now)
-        result: dict[str, Any] = {
+
+        def at(frames: int | None) -> str | None:
+            if frames is None or sample is None:
+                return None
+            seconds = frames / self.fps - max(0.0, self.clock() - sample[3])
+            return (now + timedelta(seconds=max(0.0, seconds))).isoformat(timespec="seconds")
+
+        window = sample[5] if sample is not None else None
+        if window is None:
+            window = current_window(document, now)
+        return {
             "now": now.isoformat(timespec="seconds"),
             "running": sample is not None,
             "phase": ("disabled" if not document["enabled"] else None) if sample is None else sample[0],
-            "round": None,
-            "phaseEndsAt": None,
+            "phaseEndsAt": at(sample[1]) if sample is not None and sample[0] != "disabled" else None,
             "window": None if window is None else {"start": window[0].isoformat(timespec="minutes"),
                                                    "end": window[1].isoformat(timespec="minutes")},
             "today": [{"start": start.strftime("%H:%M"), "end": "24:00" if end.date() > now.date() else end.strftime("%H:%M")}
                       for start, end in windows_on(document, now.date())],
             "nextShowAt": None if upcoming is None else upcoming.isoformat(timespec="minutes"),
+            "motorStartAt": at(sample[4]) if sample is not None else None,
         }
-        if sample is not None and sample[0] != "disabled":
-            phase, rounds, remaining, _, sampled_at = sample
-            result["round"] = rounds if phase in ("spinup", "play", "rest") and rounds else None
-            if remaining is not None:
-                seconds = remaining / self.fps - max(0.0, self.clock() - sampled_at)
-                result["phaseEndsAt"] = (now + timedelta(seconds=max(0.0, seconds))).isoformat(timespec="seconds")
-        return result

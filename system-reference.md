@@ -119,12 +119,12 @@ sampleEffect(preset, context, elapsedFrame, raining) -> RGB（各通道 0–1）
 1. 主迴圈依實際時鐘計算 `due = floor(elapsed * fps)`，追上進度後渲染（不補送漏掉的影格）。
 2. 讀 `SequenceStore.snapshot()` →（mode, compiled, generation）。generation 改變（儲存串接、套用單一效果、restart API）或天氣 generation 改變 → `playback_start_frame = frame`，從第 0 影格重播。
    排程啟用時讀的是一律循環的版本（`snapshot(loop=True)`，忽略 `ending`）。
-3. 呼叫 `Scheduler.advance(...)`（定時播放，見 1.8）：決定這一格的階段、馬達、燈的亮度倍率；暖機結束那一格回傳 `restart`，`playback_start_frame = frame` 從第 1 段重播。排程關閉時回傳 `disabled`，輸出與沒有排程時逐 byte 相同。
+3. 呼叫 `Scheduler.advance(round_frames, playback_frame)`（定時播放，見 1.8）：依時段與目前播放位置決定這一格的階段與馬達；排程**不改燈光、不重播**。排程關閉時回傳 `disabled`，輸出與沒有排程時逐 byte 相同。
 4. 呼叫 `WeatherStore.advance(...)`（造訪計時、在段落邊界套用延後的天氣分類），再取天氣 snapshot。
 5. 讀 `MotorStore.snapshot()`（排程啟用時改用排程給的馬達；每台 speed／direction）與 `HardwareStore.moon_correction()`；API 的變更從下一格生效。每台的**虛擬轉角**依該台目前的 rpm 累加（stop 為 0、ccw 為負），作為 `world-upper-half` 的相位估計（`virtualPhaseRadians`，`render_frame` 的 `rpm=0`）。
 6. 對每個 unit（一個 target）算一次、送到它的每個 universe：
    - `frameOffset = (unitId-1) * cloud_step`（僅 `cloudy`）。
-   - 單色測試中 → 整條填測試色（排程的時段外也一樣）；排程在時段外 → 直接送 `blackout_payload()`；排程要求全暗（時段開始的暖機）→ 全黑像素；否則串接模式用 `render_sequence_frame`，單一效果用 `render_frame`，排程淡出時再乘上亮度倍率。
+   - 單色測試中 → 整條填測試色；否則串接模式用 `render_sequence_frame`，單一效果用 `render_frame`。
    - `render_frame`：套 `unitVariation`（`preset_for_unit`）→ 依次數播放時 `frame % cycle` → 加 offset（整台效果除外）→ 若天氣有色盤且 `weatherPalette` 未關，**只換顏色**（漸層效果保留自己的 axis 與 axisChange；純色效果改用色盤的 axis）→ 逐顆 `sample_effect(..., raining)`。
    - `build_payload`（第 2 節）：月亮校正 → 色序與亮度 → 512 bytes，含馬達的速度與方向 channel。
 7. 結束（正常結束、Ctrl+C、SIGTERM、Windows 服務停止，或例外）時，每個 universe 送**兩次**全 0（燈全暗、馬達停），再關閉 client。
@@ -154,20 +154,23 @@ sampleEffect(preset, context, elapsedFrame, raining) -> RGB（各通道 0–1）
 
 權威來源：`backend/moon_observe_backend/schedule.py`（`Scheduler`、`current_window`、`next_show`）；格式見 5.5，前端 `frontend/src/schedule.ts`（同樣的驗證規則與狀態文字）。
 
+排程啟用時燈光**全天循環播放**（串接讀 `snapshot(loop=True)`），排程只控制馬達：
+
 ```text
-disabled ──啟用──▶ 時段內：spinup（燈全暗、馬達轉）／時段外：off（全 0）
-off ──時段開始──▶ spinup（燈全暗，spinUpSeconds）──▶ play（從第 1 段播放一輪）
-play ──播完一輪──▶ rest（馬達停、燈效繼續循環，restMinutes）──▶ spinup（燈效繼續）──▶ play …
-spinup／play／rest ──時段結束──▶ ending（馬達立即停、燈淡出 endFadeSeconds）──▶ off
+disabled ──啟用──▶ 時段內：run／時段外：off（或已進入預備期時 spinup／run）
+off ──「涵蓋時段開始的那一輪」開始前 spinUpSeconds 秒──▶ spinup（馬達轉、燈照常）──▶ 那一輪開始 ──▶ run
+run ──時段結束、這一輪還沒播完──▶ finishing（馬達繼續轉）──▶ 這一輪播完 ──▶ off（馬達停）
+run ──時段結束時剛好是一輪的開頭──▶ off
 ```
 
-- 每格由輸出迴圈呼叫一次；暖機、休息、淡出都用**輸出影格**計數，時段用後端電腦的**本地時間**（`datetime.now()`）判斷，起點包含、終點不包含。
-- 「一輪」= `output.round_length`：串接為所有段落加總；單一效果至少 60 秒並對齊效果週期（與天氣造訪相同）。播放位置達到一輪長度就進入休息。
-- `restMinutes = 0`：馬達一直轉，播完直接從第 1 段重播，不暖機。`spinUpSeconds = 0`：時段開始或休息結束時立即播放。
-- 時段外、休息、結束中的馬達送 `stop` 並保留排程的方向，避免減速時反轉。
-- 程式在時段中途啟動或啟用排程時，和時段開始一樣先暖機再播放。
-- 時段不跨午夜；相鄰的時段（含 `22:00–24:00` 接隔天 `00:00–02:00`）視為同一段連續播放，不會重新暖機。
-- 排程啟用時 `PUT /api/motor` 回 409；單色測試照常可用（時段外也能測燈）；天氣與造訪不受影響。
+- 「一輪」= `output.round_length`：串接為所有段落加總；單一效果至少 60 秒並對齊效果週期（與天氣造訪相同）。播放位置是一輪長度的整數倍時就是新一輪的開頭；排程不重播，輪的邊界完全由播放位置決定。
+- **涵蓋時段開始的那一輪**：開始時間或之前最近的一個輪開頭（剛好在開始時間就是那一輪）。每格依目前播放位置推算 `covering = floor((到開始時間的影格 + 位置) / 輪長) × 輪長 − 位置`，`covering ≤ spinUpSeconds × fps` 時啟動馬達，並記住這個時段（`armed_for`）：之後就算播放重新開始（儲存串接、天氣手動測試）讓輪的邊界移動，馬達也不會停下。
+- 馬達一啟動就是排程設定的速度（沒有緩啟動）；時段內不休息，一直轉到時段結束。結束時若這一輪還沒播完就播完才停（最多超過一輪）；播放重新開始也算這一輪結束。
+- 程式在時段中途啟動或啟用排程（含「涵蓋的那一輪」已經開始）時，馬達立即啟動。
+- 時段外馬達送 `stop` 並保留排程的方向，避免減速時反轉；燈光照常。
+- 時段用後端電腦的**本地時間**（`datetime.now()`）判斷，起點包含、終點不包含；時段不跨午夜，相鄰的時段（含 `22:00–24:00` 接隔天 `00:00–02:00`）視為同一段連續運轉。下一個時段的預備期如果落在上一個時段的收尾內，馬達一直轉、不會中斷。
+- 排程啟用時 `PUT /api/motor` 回 409；單色測試照常可用；天氣與造訪不受影響。
+- v0.2.0 的排程（Schedule v1）時段內會「播一輪、休息、暖機後從第 1 段重播」，時段外全暗；v0.3.0 改為現在的行為，讀到 v1 檔案時自動忽略 `restMinutes`、`endFadeSeconds`。
 
 ---
 
@@ -203,7 +206,7 @@ spinup／play／rest ──時段結束──▶ ending（馬達立即停、燈�
 ### 2.3 馬達
 
 - 每台的 speed（`stop`／`mid`／`max`）與 direction（`cw`／`ccw`）從 `PUT /api/motor` 手動設定，或在排程啟用時由排程控制（1.8；排程的設定存在 `schedule.json`）；串接與效果不會改變轉速。
-- 手動設定只存在記憶體：後端啟動時一律 `stop`、`cw`。排程啟用時重新開機後會自動依時段表演。
+- 手動設定只存在記憶體：後端啟動時一律 `stop`、`cw`。排程啟用時重新開機後會自動依時段運轉馬達。
 - `[motor] rpm = { mid = 130, max = 500 }` 只用於模擬器與相位估計；`max` 由使用者提供，`mid` 依 60／230 比例估計。
 - 控制盒收不到 Art-Net 時**不會**自己停馬達，目前不做額外保護；只保證程式結束時送全 0。
 
@@ -289,7 +292,7 @@ frontend/src/
 | 色彩 | 天氣啟用時：顏色來源〔天氣色盤｜自訂顏色〕、漸層方向、中途切換方向、目前天氣色票、`<details>` 備援顏色；否則：〔純色｜漸層〕、色彩／漸層編輯 |
 | 串接 | 模擬模式：`SequenceEditor`（段落清單、增刪複製移動、播放規則、轉場、結尾、儲存／重新載入）；後端控制模式：`SavedSequenceView`（唯讀＋從頭播放） |
 | 後端 | 播放進度；後端控制模式下：連線狀態（控制器數、燈數 × 台數、版本）、重新讀取／套用、重新播放〔串接｜單一效果〕、`MotorPanel`（送到後端，顯示實際 DMX 值；排程啟用時唯讀）、單色測試 |
-| 排程 | `SchedulePanel`：目前階段與倒數、後端時間與今天的時段、啟用開關、休息／暖機／結束淡出、表演時每台的馬達、每日時段、特殊日期（多段或「當天不表演」，過期變灰）；儲存前即時驗證 |
+| 排程 | `SchedulePanel`：目前階段與倒數（含預估的馬達啟動時間）、後端時間與今天的時段、啟用開關、馬達提前啟動秒數、時段內每台的馬達、每日時段、特殊日期（多段或「當天不表演」，過期變灰）；儲存前即時驗證 |
 | 天氣 | `WeatherPanel`：目前天氣與來源、手動測試天氣（類別＋氣溫，10 分鐘）、立即造訪／結束造訪、色盤頁連結 |
 | 物理 | 模擬模式下的 `MotorPanel`（只影響 3D 畫面）、Mid speed、Max speed、Controller rate、Camera exposure、Visual persistence、Temporal samples；「全部」視角時另有 Unit phase step、Effect frame step（有天氣時停用） |
 
@@ -330,9 +333,9 @@ frontend/src/
 | GET | `/api/sequence` | `{revision, sequence, playbackMode, output:{fps,pixels,unitCount,motorRpm}}` | 讀串接 |
 | PUT | `/api/sequence` | Sequence v1 | 原子覆寫 `sequence.json`，切回串接模式並從頭播放 |
 | PUT | `/api/playback/restart` | `{"source":"sequence"\|"single"}` | 從第 0 影格重播，不改檔 |
-| GET | `/api/playback` | `{active:false}` 或 `{active, mode, restart, fps, ageMs, frame, motor:[{speed,direction}×N], schedule:{enabled,phase,round}, ...}` | 輸出迴圈目前位置；串接含 step/transition/ending，單一含 cycle；單色測試時附 `unitColors`；`motor` 是實際送出的值（排程啟用時為排程的馬達） |
-| GET | `/api/schedule` | `{revision, schedule, status}` | 排程（Schedule v1，檔案不存在時為關閉的預設）與狀態：`status = {now, running, phase, round, phaseEndsAt, window, today, nextShowAt}`；`phase` 為 `disabled`／`off`／`spinup`／`play`／`rest`／`ending`，輸出迴圈沒在跑時為 `null` |
-| PUT | `/api/schedule` | Schedule v1 → 同 GET | 原子覆寫 `schedule.json`，下一格依新設定判斷階段 |
+| GET | `/api/playback` | `{active:false}` 或 `{active, mode, restart, fps, ageMs, frame, motor:[{speed,direction}×N], schedule:{enabled,phase}, ...}` | 輸出迴圈目前位置；串接含 step/transition/ending，單一含 cycle；單色測試時附 `unitColors`；`motor` 是實際送出的值（排程啟用時為排程的馬達） |
+| GET | `/api/schedule` | `{revision, schedule, status}` | 排程（Schedule v2，檔案不存在時為關閉的預設）與狀態：`status = {now, running, phase, phaseEndsAt, window, today, nextShowAt, motorStartAt}`；`phase` 為 `disabled`／`off`／`spinup`／`run`／`finishing`，輸出迴圈沒在跑時為 `null`；`phaseEndsAt` 是 spinup 那一輪開始或 finishing 這一輪結束的時間，`motorStartAt` 是時段外預估的馬達啟動時間 |
+| PUT | `/api/schedule` | Schedule v2 → 同 GET | 原子覆寫 `schedule.json`，下一格依新設定判斷階段 |
 | GET | `/api/weather` | 天氣 snapshot（見 6.4）或 `{"enabled":false}` | |
 | PUT/DELETE | `/api/weather/override` | `{"category":"clear"\|"cloudy"\|"rain","temperatureC":-100..70}` | 手動測試天氣 10 分鐘（直接影響實機） |
 | PUT/DELETE | `/api/weather/visit` | `{"index": n}` | 立即造訪／結束造訪 |
@@ -476,15 +479,13 @@ longitude = 139.6503
 - `axis` 只允許 `strip`／`radius`，且只用於純色效果（漸層效果保留自己的方向）。
 - 內建預設（`palette.DEFAULT_PALETTE`）：<18°C 冷色、18–27°C 中性、≥28°C 暖色。
 
-### 5.5 Schedule v1
+### 5.5 Schedule v2
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "enabled": true,
-  "restMinutes": 10,
   "spinUpSeconds": 5,
-  "endFadeSeconds": 3,
   "motors": [{ "unitId": 1, "speed": "max", "direction": "cw" }],
   "daily": [{ "start": "18:00", "end": "20:00" }],
   "dates": [
@@ -494,10 +495,10 @@ longitude = 139.6503
 }
 ```
 
-- 八個欄位缺一不可；`restMinutes` 0–240 的整數；`spinUpSeconds` 0–30；`endFadeSeconds` 0–10。
+- 六個欄位缺一不可；`spinUpSeconds`（馬達在那一輪開始前幾秒啟動）0–30。v1 檔案（多了 `restMinutes`、`endFadeSeconds`）仍可讀取，下次存檔時寫成 v2。
 - `motors`：每台一筆（`unitId` 1..N 不重複），`speed` 只能 `mid`／`max`，`direction` 為 `cw`／`ccw`。
 - 時段 `HH:MM`，`start` 00:00–23:59、`end` 最晚 `24:00` 且晚於 `start`；同一天最多 8 段、不能重疊（可以相鄰）。
-- `dates`：最多 400 天、`YYYY-MM-DD` 不重複；有列出的日期**取代**當天的 `daily`，`windows: []` = 當天不表演。
+- `dates`：最多 400 天、`YYYY-MM-DD` 不重複；有列出的日期**取代**當天的 `daily`，`windows: []` = 當天不表演（馬達整天不轉，燈照常）。
 - 正規化時 `motors` 依 `unitId`、時段依開始時間、`dates` 依日期排序；過期日期保留。行為見 1.8。
 
 ### 5.6 部署位置（Windows）

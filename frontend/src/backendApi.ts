@@ -31,14 +31,14 @@ export type BackendHardwareState = {
 
 export type BackendTarget = { unitId: number; ip: string; universes: number[] }
 
-export type SchedulePhase = 'disabled' | 'off' | 'spinup' | 'play' | 'rest' | 'ending'
+/** off：時段外馬達停（燈照常）；spinup：馬達已啟動、等涵蓋時段開始的那一輪；run：運轉中；finishing：時段已結束、播完這一輪才停。 */
+export type SchedulePhase = 'disabled' | 'off' | 'spinup' | 'run' | 'finishing'
 
 /** 定時播放的輕量狀態（/api/state、/api/playback）。 / Lightweight timed-show state. */
 export type ScheduleSummary = {
   enabled: boolean
   /** null：輸出迴圈沒在跑（--api-only）。 / null when the output loop is not running. */
   phase: SchedulePhase | null
-  round: number | null
 }
 
 export type ScheduleWindow = { start: string; end: string }
@@ -46,11 +46,10 @@ export type ScheduleWindow = { start: string; end: string }
 export type ScheduleMotor = { unitId: number; speed: Exclude<MotorSpeed, 'stop'>; direction: MotorDirection }
 
 export type ScheduleDocument = {
-  schemaVersion: 1
+  schemaVersion: 2
   enabled: boolean
-  restMinutes: number
+  /** 馬達在燈光一輪開始前幾秒先啟動。 / Seconds the motors start before the round. */
   spinUpSeconds: number
-  endFadeSeconds: number
   motors: ScheduleMotor[]
   daily: ScheduleWindow[]
   dates: { date: string; windows: ScheduleWindow[] }[]
@@ -61,11 +60,14 @@ export type ScheduleStatus = {
   now: string
   running: boolean
   phase: SchedulePhase | null
-  round: number | null
+  /** spinup：那一輪開始的時間；finishing：這一輪結束、馬達停止的時間。 / Round start (spinup) or end (finishing). */
   phaseEndsAt: string | null
+  /** 正在運轉或即將開始的時段。 / The window the motors are running for (or about to). */
   window: ScheduleWindow | null
   today: ScheduleWindow[]
   nextShowAt: string | null
+  /** 時段外：預計馬達啟動的時間（依目前播放位置推算）。 / Off: estimated motor start. */
+  motorStartAt: string | null
 }
 
 export type BackendScheduleState = {

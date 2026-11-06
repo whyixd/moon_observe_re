@@ -6,11 +6,9 @@ afterEach(() => vi.unstubAllGlobals())
 
 function schedule(overrides: Partial<ScheduleDocument> = {}): ScheduleDocument {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     enabled: true,
-    restMinutes: 10,
     spinUpSeconds: 5,
-    endFadeSeconds: 3,
     motors: [1, 2, 3, 4, 5].map((unitId) => ({ unitId, speed: 'max' as const, direction: 'cw' as const })),
     daily: [{ start: '18:00', end: '20:00' }],
     dates: [],
@@ -22,12 +20,12 @@ function status(overrides: Partial<ScheduleStatus> = {}): ScheduleStatus {
   return {
     now: '2026-11-04T18:30:00',
     running: true,
-    phase: 'play',
-    round: 2,
-    phaseEndsAt: '2026-11-04T18:31:30',
+    phase: 'run',
+    phaseEndsAt: null,
     window: { start: '2026-11-04T18:00', end: '2026-11-04T20:00' },
     today: [{ start: '18:00', end: '20:00' }],
     nextShowAt: '2026-11-05T18:00',
+    motorStartAt: null,
     ...overrides,
   }
 }
@@ -42,11 +40,9 @@ describe('schedule validation', () => {
 
   it('matches the backend rules', () => {
     const cases: [Partial<ScheduleDocument>, string][] = [
-      [{ restMinutes: 1.5 }, '休息時間'],
-      [{ restMinutes: 241 }, '休息時間'],
-      [{ restMinutes: Number.NaN }, '休息時間'],
-      [{ spinUpSeconds: 31 }, '暖機時間'],
-      [{ endFadeSeconds: -1 }, '結束淡出'],
+      [{ spinUpSeconds: 31 }, '提前啟動'],
+      [{ spinUpSeconds: -1 }, '提前啟動'],
+      [{ spinUpSeconds: Number.NaN }, '提前啟動'],
       [{ daily: [{ start: '8:00', end: '09:00' }] }, 'HH:MM'],
       [{ daily: [{ start: '24:00', end: '24:00' }] }, 'HH:MM'],
       [{ daily: [{ start: '22:00', end: '02:00' }] }, '跨午夜'],
@@ -87,19 +83,24 @@ describe('schedule status', () => {
   })
 
   it('counts down from the response time', () => {
-    expect(phaseRemainingSeconds(status(), 0)).toBe(90)
-    expect(phaseRemainingSeconds(status(), 30_000)).toBe(60)
-    expect(phaseRemainingSeconds(status(), 200_000)).toBe(0)
-    expect(phaseRemainingSeconds(status({ phaseEndsAt: null }), 0)).toBeNull()
+    const finishing = status({ phase: 'finishing', phaseEndsAt: '2026-11-04T18:31:30' })
+    expect(phaseRemainingSeconds(finishing, 0)).toBe(90)
+    expect(phaseRemainingSeconds(finishing, 30_000)).toBe(60)
+    expect(phaseRemainingSeconds(finishing, 200_000)).toBe(0)
+    expect(phaseRemainingSeconds(status(), 0)).toBeNull()
   })
 
   it('describes each phase', () => {
-    expect(describeStatus(status(), 0)).toBe('表演中 · 第 2 輪，剩 1:30，20:00 結束')
-    expect(describeStatus(status({ phase: 'rest', phaseEndsAt: '2026-11-04T18:40:00' }), 0)).toBe('休息中 · 10:00後暖機開始下一輪，20:00 結束')
-    expect(describeStatus(status({ phase: 'spinup', round: 2, phaseEndsAt: '2026-11-04T18:30:03' }), 0)).toBe('暖機中 · 3 秒後開始第 3 輪，20:00 結束')
-    expect(describeStatus(status({ phase: 'off', window: null }), 0)).toBe('時段外 · 下一場 11/5 18:00')
-    expect(describeStatus(status({ phase: 'off', window: null, nextShowAt: null }), 0)).toBe('時段外 · 之後沒有排定的時段')
-    expect(describeStatus(status({ phase: 'ending', window: null }), 0)).toBe('結束中 · 馬達停止、燈光淡出 · 下一場 11/5 18:00')
+    expect(describeStatus(status(), 0)).toBe('馬達運轉中 · 時段 18:00–20:00（結束時播完當輪才停）')
+    expect(describeStatus(status({ window: { start: '2026-11-04T22:00', end: '2026-11-05T00:00' } }), 0))
+      .toBe('馬達運轉中 · 時段 22:00–11/5 00:00（結束時播完當輪才停）')
+    expect(describeStatus(status({ phase: 'spinup', now: '2026-11-04T17:59:55', phaseEndsAt: '2026-11-04T17:59:58' }), 0))
+      .toBe('馬達暖機 · 3 秒後燈光進入新一輪 · 時段 18:00–20:00')
+    expect(describeStatus(status({ phase: 'finishing', window: null, now: '2026-11-04T20:00:10', phaseEndsAt: '2026-11-04T20:02:10' }), 0))
+      .toBe('收尾中 · 時段已結束，2:00後播完這一輪馬達停止')
+    expect(describeStatus(status({ phase: 'off', window: null, motorStartAt: '2026-11-05T17:57:40' }), 0))
+      .toBe('時段外 · 馬達停止、燈光照常 · 下一場 11/5 18:00，馬達約 11/5 17:57 啟動')
+    expect(describeStatus(status({ phase: 'off', window: null, nextShowAt: null }), 0)).toBe('時段外 · 馬達停止、燈光照常 · 之後沒有排定的時段')
     expect(describeStatus(status({ phase: 'disabled', running: false }), 0)).toBe('排程關閉')
     expect(describeStatus(status({ phase: null, running: false }), 0)).toContain('--api-only')
   })

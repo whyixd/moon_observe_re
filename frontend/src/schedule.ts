@@ -4,17 +4,14 @@ import type { ScheduleDocument, SchedulePhase, ScheduleStatus, ScheduleWindow } 
 
 export const MAX_WINDOWS_PER_DAY = 8
 export const MAX_DATES = 400
-export const MAX_REST_MINUTES = 240
 export const MAX_SPIN_UP_SECONDS = 30
-export const MAX_END_FADE_SECONDS = 10
 
 export const PHASE_LABELS: Record<SchedulePhase, string> = {
   disabled: '排程關閉',
   off: '時段外',
-  spinup: '暖機中',
-  play: '表演中',
-  rest: '休息中',
-  ending: '結束中',
+  spinup: '馬達暖機',
+  run: '馬達運轉',
+  finishing: '收尾中',
 }
 
 const TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/
@@ -54,11 +51,10 @@ export function windowProblems(windows: ScheduleWindow[], label: string): string
 
 export function scheduleProblems(document: ScheduleDocument): string[] {
   const problems: string[] = []
-  const integerIn = (value: number, max: number) => Number.isInteger(value) && value >= 0 && value <= max
-  const numberIn = (value: number, max: number) => Number.isFinite(value) && value >= 0 && value <= max
-  if (!integerIn(document.restMinutes, MAX_REST_MINUTES)) problems.push(`休息時間要是 0–${MAX_REST_MINUTES} 的整數分鐘`)
-  if (!numberIn(document.spinUpSeconds, MAX_SPIN_UP_SECONDS)) problems.push(`暖機時間要在 0–${MAX_SPIN_UP_SECONDS} 秒`)
-  if (!numberIn(document.endFadeSeconds, MAX_END_FADE_SECONDS)) problems.push(`結束淡出要在 0–${MAX_END_FADE_SECONDS} 秒`)
+  const spinUp = document.spinUpSeconds
+  if (!(Number.isFinite(spinUp) && spinUp >= 0 && spinUp <= MAX_SPIN_UP_SECONDS)) {
+    problems.push(`馬達提前啟動要在 0–${MAX_SPIN_UP_SECONDS} 秒`)
+  }
   problems.push(...windowProblems(document.daily, '每日時段'))
   if (document.dates.length > MAX_DATES) problems.push(`特殊日期最多 ${MAX_DATES} 天`)
   const seen = new Set<string>()
@@ -122,19 +118,22 @@ function formatDuration(seconds: number): string {
 export function describeStatus(status: ScheduleStatus, elapsedMs: number): string {
   if (!status.running) return status.phase === 'disabled' ? '排程關閉' : '後端沒有輸出 Art-Net（--api-only），排程不會執行'
   const remaining = phaseRemainingSeconds(status, elapsedMs)
-  const next = status.nextShowAt ? `下一場 ${formatShowTime(status.nextShowAt, status.now)}` : '之後沒有排定的時段'
-  const windowEnd = status.window ? `，${status.window.end.slice(11)} 結束` : ''
+  const window = status.window
+  const windowText = window
+    ? `${formatShowTime(window.start, status.now)}–${formatShowTime(window.end, window.start)}`
+    : ''
   switch (status.phase) {
-    case 'off':
-      return `時段外 · ${next}`
+    case 'off': {
+      if (!status.nextShowAt) return '時段外 · 馬達停止、燈光照常 · 之後沒有排定的時段'
+      const start = status.motorStartAt ? `，馬達約 ${formatShowTime(status.motorStartAt, status.now)} 啟動` : ''
+      return `時段外 · 馬達停止、燈光照常 · 下一場 ${formatShowTime(status.nextShowAt, status.now)}${start}`
+    }
     case 'spinup':
-      return `暖機中 · ${remaining === null ? '' : `${formatDuration(remaining)}後`}開始第 ${(status.round ?? 0) + 1} 輪${windowEnd}`
-    case 'play':
-      return `表演中 · 第 ${status.round ?? 1} 輪${remaining === null ? '' : `，剩 ${formatDuration(remaining)}`}${windowEnd}`
-    case 'rest':
-      return `休息中 · ${remaining === null ? '' : `${formatDuration(remaining)}後`}暖機開始下一輪${windowEnd}`
-    case 'ending':
-      return `結束中 · 馬達停止、燈光淡出 · ${next}`
+      return `馬達暖機 · ${remaining === null ? '' : `${formatDuration(remaining)}後`}燈光進入新一輪 · 時段 ${windowText}`
+    case 'run':
+      return `馬達運轉中 · 時段 ${windowText}（結束時播完當輪才停）`
+    case 'finishing':
+      return `收尾中 · 時段已結束，${remaining === null ? '' : `${formatDuration(remaining)}後`}播完這一輪馬達停止`
     default:
       return '排程關閉'
   }

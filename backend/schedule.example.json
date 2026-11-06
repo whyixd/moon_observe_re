@@ -1,9 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "enabled": true,
-  "restMinutes": 10,
   "spinUpSeconds": 5,
-  "endFadeSeconds": 3,
   "motors": [
     {
       "unitId": 1,

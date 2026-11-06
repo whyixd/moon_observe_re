@@ -61,15 +61,14 @@ uv run --locked --project backend python backend/run.py --config backend/config.
 | GET／PUT | `/api/schedule` | 讀／存定時播放（含目前階段 `status`）；排程啟用時 `PUT /api/motor` 回 409 |
 | GET／PUT／DELETE | `/api/weather`、`/api/weather/override`、`/api/weather/visit`、`/api/weather/palette` | 天氣（需 `[weather]`） |
 
-馬達狀態、月亮校正開關、單色測試、天氣手動測試都只在記憶體，重啟後回到預設（馬達一律停止、月亮校正回到 config）。排程存在 `schedule.json`，啟用時重新開機後會自動依時段表演。
+馬達狀態、月亮校正開關、單色測試、天氣手動測試都只在記憶體，重啟後回到預設（馬達一律停止、月亮校正回到 config）。排程存在 `schedule.json`，啟用時重新開機後會自動依時段運轉馬達。
 
 ## 定時播放
 
 在控制頁「排程」分頁（或 `PUT /api/schedule`）設定，存檔後立即生效：
 
-- 表演時段內：馬達先暖機（`spinUpSeconds`，預設 5 秒），再從串接第 1 段播放一輪；播完休息 `restMinutes` 分鐘（馬達停、燈效繼續循環），休息結束先暖機再重新播放。
-- 時段開始時暖機期間燈全暗；時段結束時馬達立即停止、燈在 `endFadeSeconds` 內淡出；時段外持續送全 0。
-- 每日時段可設多段；特殊日期取代當天的每日時段，也可設成當天不表演。時間依電腦本地時間，時段不跨午夜（相鄰時段會接續播放）。
+- 燈光全天循環播放串接，排程只控制馬達。
+- 時段內馬達一直轉：在「涵蓋時段開始時間的那一輪」（開始時間或之前最近的一輪開頭）開始前 `spinUpSeconds` 秒（預設 5 秒）啟動；時段結束時若這一輪還沒播完，播完才停。時段外馬達停止。
 - 排程啟用時串接一律循環播放、手動馬達命令回 409；單色測試照常可用。完整規則見 `system-reference.md` 1.8 與 5.5 節。
 
 ## 天氣

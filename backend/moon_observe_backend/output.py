@@ -80,8 +80,8 @@ def stream(
     Every unit gets one 512-byte frame per output frame (``hardware.build_payload``), sent unchanged to
     each of its universes. ``motor_provider`` returns (speed, direction) per unit (index = unit_id - 1);
     without it every motor stays stopped. On exit every universe gets the all-zero frame twice.
-    ``scheduler`` (timed shows) overrides the motors, dims or blacks out the lights and restarts playback
-    from step 1 when a round begins; while it is disabled the output is exactly as without it.
+    ``scheduler`` (timed shows) overrides the motors only, aligned to the looping playback's rounds; the
+    lights are never touched. While it is disabled the output is exactly as without it.
     """
     if seconds is not None and (not math.isfinite(seconds) or seconds <= 0):
         raise ValueError("seconds must be positive and finite")
@@ -133,13 +133,9 @@ def stream(
             show = None
             if scheduler is not None:
                 show = scheduler.advance(
-                    0 if last_frame is None else frame - last_frame,
                     round_length(schedule, active_preset, fps, unit_count)[0],
                     frame - playback_start_frame,
                 )
-                if show.restart:
-                    playback_start_frame = frame
-                    restarted = True
                 if show.phase == "disabled":
                     show = None
             if playback_advance is not None:
@@ -196,16 +192,8 @@ def stream(
                     "virtualPhaseRadians": phases[unit_id - 1],
                 }
                 color_override = weather.get("color") if category is not None else None
-                if test_color is None and show is not None and show.blackout:
-                    # 時段外：全 0（燈全暗、馬達停）。 / Outside the show windows: all zero (dark, motor stopped).
-                    payloads[unit_id] = blackout_payload()
-                    client.send(payloads[unit_id])
-                    sent += 1
-                    continue
                 if test_color is not None:
                     pixels = [test_color] * config["pixels"]
-                elif show is not None and show.light <= 0:
-                    pixels = [(0.0, 0.0, 0.0)] * config["pixels"]
                 elif sequence_mode:
                     pixels = render_sequence_frame(
                         sequence_state[1], unit, playback_frame,
@@ -219,8 +207,6 @@ def stream(
                         fps=fps, rpm=0, raining=category == "rain",
                         color_override=color_override,
                     )
-                if test_color is None and show is not None and 0 < show.light < 1:
-                    pixels = [(r * show.light, g * show.light, b * show.light) for r, g, b in pixels]
                 speed, direction = motors[unit_id - 1]
                 payloads[unit_id] = build_payload(
                     pixels, hardware=hardware, motor=motor, speed=speed, direction=direction,
@@ -305,8 +291,8 @@ def main(argv: list[str] | None = None) -> int:
                     sent = stream(config, preset, seconds=args.seconds,
                                   preset_provider=store.snapshot, motor_provider=motor_store.snapshot,
                                   moon_correction_provider=hardware_store.moon_correction,
-                                  # 排程啟用時串接一律循環，休息時燈效才能繼續。
-                                  # While a timed show is enabled the sequence always loops so rest keeps playing.
+                                  # 排程啟用時串接一律循環：燈光全天播放，馬達對齊每一輪。
+                                  # While a timed show is enabled the sequence always loops (lights all day).
                                   sequence_provider=lambda: sequence_store.snapshot(loop=schedule_store.enabled()),
                                   weather_provider=weather_store.snapshot if weather_store is not None else None,
                                   playback_reporter=playback_monitor.report,
