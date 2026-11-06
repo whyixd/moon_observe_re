@@ -6,7 +6,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 function schedule(overrides: Partial<ScheduleDocument> = {}): ScheduleDocument {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     enabled: true,
     spinUpSeconds: 5,
     motors: [1, 2, 3, 4, 5].map((unitId) => ({ unitId, speed: 'max' as const, direction: 'cw' as const })),
@@ -45,9 +45,12 @@ describe('schedule validation', () => {
       [{ spinUpSeconds: 31 }, '提前啟動'],
       [{ spinUpSeconds: -1 }, '提前啟動'],
       [{ spinUpSeconds: Number.NaN }, '提前啟動'],
-      [{ daily: [{ start: '18:00', end: '20:00', mode: 'cycle' }] }, '休息時間'],
-      [{ daily: [{ start: '18:00', end: '20:00', mode: 'cycle', restMinutes: 1.5 }] }, '休息時間'],
-      [{ daily: [{ start: '18:00', end: '20:00', mode: 'cycle', restMinutes: 241 }] }, '休息時間'],
+      [{ daily: [{ start: '18:00', end: '20:00', mode: 'cycle', runRounds: 1 }] }, '休息時間'],
+      [{ daily: [{ start: '18:00', end: '20:00', mode: 'cycle', runRounds: 1, restMinutes: 1.5 }] }, '休息時間'],
+      [{ daily: [{ start: '18:00', end: '20:00', mode: 'cycle', runRounds: 1, restMinutes: 241 }] }, '休息時間'],
+      [{ daily: [{ start: '18:00', end: '20:00', mode: 'cycle', restMinutes: 10 }] }, '運轉輪數'],
+      [{ daily: [{ start: '18:00', end: '20:00', mode: 'cycle', runRounds: 0, restMinutes: 10 }] }, '運轉輪數'],
+      [{ daily: [{ start: '18:00', end: '20:00', mode: 'cycle', runRounds: 100, restMinutes: 10 }] }, '運轉輪數'],
       [{ daily: [{ start: '8:00', end: '09:00', mode: 'continuous' }] }, 'HH:MM'],
       [{ daily: [{ start: '24:00', end: '24:00', mode: 'continuous' as const }] }, 'HH:MM'],
       [{ daily: [{ start: '22:00', end: '02:00', mode: 'continuous' as const }] }, '跨午夜'],
@@ -108,13 +111,13 @@ describe('schedule status', () => {
     expect(describeStatus(status({ phase: 'off', window: null, motorStartAt: '2026-11-05T17:57:40' }), 0))
       .toBe('時段外 · 馬達停止、燈光照常 · 下一場 11/5 18:00，馬達約 11/5 17:57 啟動')
     expect(describeStatus(status({ phase: 'off', window: null, nextShowAt: null }), 0)).toBe('時段外 · 馬達停止、燈光照常 · 之後沒有排定的時段')
-    const cycleWindow = { start: '2026-11-04T18:00', end: '2026-11-04T20:00', mode: 'cycle' as const, restMinutes: 10 }
-    expect(describeStatus(status({ phase: 'play', mode: 'cycle', round: 2, window: cycleWindow, phaseEndsAt: '2026-11-04T18:31:30' }), 0))
-      .toBe('表演中 · 第 2 輪，剩 1:30 · 循環時段 18:00–20:00')
+    const cycleWindow = { start: '2026-11-04T18:00', end: '2026-11-04T20:00', mode: 'cycle' as const, runRounds: 5, restMinutes: 10 }
+    expect(describeStatus(status({ phase: 'play', mode: 'cycle', round: 2, runRounds: 5, window: cycleWindow, phaseEndsAt: '2026-11-04T18:31:30' }), 0))
+      .toBe('表演中 · 第 2／5 輪，1:30後休息 · 循環時段 18:00–20:00')
     expect(describeStatus(status({ phase: 'rest', mode: 'cycle', round: 2, window: cycleWindow, phaseEndsAt: '2026-11-04T18:40:00' }), 0))
       .toBe('休息中 · 馬達停、燈光照常 · 10:00後暖機開始下一輪 · 循環時段 18:00–20:00')
     expect(describeStatus(status({ phase: 'spinup', mode: 'cycle', round: 2, window: cycleWindow, phaseEndsAt: '2026-11-04T18:30:05' }), 0))
-      .toBe('馬達暖機 · 5 秒後燈光從第 1 段播放第 3 輪 · 循環時段 18:00–20:00')
+      .toBe('馬達暖機 · 5 秒後燈光從第 1 段開始播放 5 輪 · 循環時段 18:00–20:00')
     expect(describeStatus(status({ phase: 'disabled', running: false }), 0)).toBe('排程關閉')
     expect(describeStatus(status({ phase: null, running: false }), 0)).toContain('--api-only')
   })

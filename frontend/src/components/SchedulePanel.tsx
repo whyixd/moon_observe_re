@@ -10,6 +10,7 @@ import {
 import {
   MAX_DATES,
   MAX_REST_MINUTES,
+  MAX_RUN_ROUNDS,
   MAX_SPIN_UP_SECONDS,
   MODE_LABELS,
   MAX_WINDOWS_PER_DAY,
@@ -24,6 +25,7 @@ const SPEED_LABELS: Record<ScheduleMotor['speed'], string> = { mid: '中速', ma
 const DIRECTION_LABELS: Record<MotorDirection, string> = { cw: '順', ccw: '逆' }
 const NEW_WINDOW: ScheduleWindow = { start: '18:00', end: '20:00', mode: 'continuous' }
 const DEFAULT_REST_MINUTES = 10
+const DEFAULT_RUN_ROUNDS = 1
 
 function numberInput(value: string): number {
   return value.trim() === '' ? Number.NaN : Number(value)
@@ -53,12 +55,21 @@ function WindowList({ windows, onChange }: { windows: ScheduleWindow[]; onChange
             value={window.end} onChange={(event) => update(index, { end: event.target.value })} />
           <select aria-label="馬達模式" value={window.mode}
             onChange={(event) => update(index, event.target.value === 'cycle'
-              ? { mode: 'cycle', restMinutes: window.restMinutes ?? DEFAULT_REST_MINUTES }
+              ? { mode: 'cycle', runRounds: window.runRounds ?? DEFAULT_RUN_ROUNDS, restMinutes: window.restMinutes ?? DEFAULT_REST_MINUTES }
               : { mode: 'continuous' })}>
             {(Object.keys(MODE_LABELS) as ScheduleWindow['mode'][]).map((mode) => (
               <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
             ))}
           </select>
+          {window.mode === 'cycle' && (
+            <label className="schedule-rest">
+              運轉
+              <input type="number" min={1} max={MAX_RUN_ROUNDS} step={1} aria-label="運轉輪數"
+                value={window.runRounds === undefined || Number.isNaN(window.runRounds) ? '' : window.runRounds}
+                onChange={(event) => update(index, { runRounds: numberInput(event.target.value) })} />
+              輪
+            </label>
+          )}
           {window.mode === 'cycle' && (
             <label className="schedule-rest">
               休息
@@ -251,7 +262,7 @@ export function SchedulePanel({ onSaved }: { onSaved?: () => void }) {
       <p className="control-note">
         排程啟用時燈光全天循環播放串接，時段外馬達停止、燈光照常。每個時段選一種模式：
         持續＝在「涵蓋時段開始時間的那一輪」（開始時間或之前最近的一輪開頭）前幾秒先啟動，一直運轉到時段結束，結束時播完當輪才停；
-        循環＝時段開始時馬達先暖機，燈光從第 1 段播放一輪，播完休息設定的分鐘數（馬達停、燈照常），休息後再暖機、從第 1 段重播，時段結束時馬達立刻停止。
+        循環＝時段開始時馬達先暖機，燈光從第 1 段連續播放設定的輪數，播完休息設定的分鐘數（馬達停、燈照常），休息後再暖機、從第 1 段重播，時段結束時馬達立刻停止。
         時間依後端電腦的本地時間；時段不能跨午夜，跨夜請拆成兩天（例如 22:00–24:00 與隔天 00:00–02:00，會接續運轉）。
       </p>
     </div>

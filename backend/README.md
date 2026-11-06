@@ -69,7 +69,7 @@ uv run --locked --project backend python backend/run.py --config backend/config.
 
 - 燈光全天循環播放串接，時段外馬達停止。每個時段選一種模式：
   - 持續：在「涵蓋時段開始時間的那一輪」（開始時間或之前最近的一輪開頭）開始前 `spinUpSeconds` 秒（預設 5 秒）啟動，一直轉到時段結束；結束時若這一輪還沒播完，播完才停。
-  - 循環：時段開始時馬達先暖機 `spinUpSeconds` 秒，燈光從第 1 段播放一輪，播完休息 `restMinutes` 分鐘（馬達停、燈照常），休息後再暖機、從第 1 段重播；時段結束時馬達立刻停。
+  - 循環：時段開始時馬達先暖機 `spinUpSeconds` 秒，燈光從第 1 段連續播放 `runRounds` 輪，播完休息 `restMinutes` 分鐘（馬達停、燈照常），休息後再暖機、從第 1 段重播；時段結束時馬達立刻停。
 - 排程啟用時串接一律循環播放、手動馬達命令回 409；單色測試照常可用。完整規則見 `system-reference.md` 1.8 與 5.5 節。
 
 ## 天氣

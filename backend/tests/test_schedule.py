@@ -77,7 +77,7 @@ class ValidationTests(unittest.TestCase):
         motors = default_schedule(UNITS)["motors"]
         cases = [
             ({**default_schedule(UNITS), "extra": 1}, "exactly"),
-            (changed(schemaVersion=4), "schemaVersion"),
+            (changed(schemaVersion=5), "schemaVersion"),
             (changed(schemaVersion=1), "schemaVersion"),  # v1 needs its legacy fields to be recognised
             ({**default_schedule(UNITS), "restMinutes": 10}, "exactly"),
             (changed(enabled=1), "enabled"),
@@ -86,10 +86,14 @@ class ValidationTests(unittest.TestCase):
             (changed(spinUpSeconds=True), "spinUpSeconds"),
             (changed(daily=[{"start": "18:00", "end": "20:00"}]), "mode"),
             (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "loop"}]), "mode"),
-            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "cycle"}]), "restMinutes"),
+            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "cycle", "runRounds": 1}]), "restMinutes"),
+            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "cycle", "restMinutes": 10}]), "runRounds"),
             (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "continuous", "restMinutes": 5}]), "mode"),
-            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "cycle", "restMinutes": 241}]), "restMinutes"),
-            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "cycle", "restMinutes": 1.5}]), "restMinutes"),
+            (changed(daily=[cycle("18:00", "20:00", 241)]), "restMinutes"),
+            (changed(daily=[cycle("18:00", "20:00", 1.5)]), "restMinutes"),
+            (changed(daily=[cycle("18:00", "20:00", 10, runs=0)]), "runRounds"),
+            (changed(daily=[cycle("18:00", "20:00", 10, runs=100)]), "runRounds"),
+            (changed(daily=[cycle("18:00", "20:00", 10, runs=2.0)]), "runRounds"),
             (changed(motors=motors[:4]), "all 5 units"),
             (changed(motors=[*motors[:4], {**motors[0]}]), "distinct"),
             (changed(motors=[{**motors[0], "speed": "stop"}, *motors[1:]]), "speed"),
@@ -110,30 +114,36 @@ class ValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     validate_schedule(raw, UNITS)
 
-    def test_reads_v1_and_v2_documents(self):
+    def test_reads_v1_to_v3_documents(self):
         bare = [{"start": "18:00", "end": "20:00"}]
         dates = [{"date": "2026-11-05", "windows": [{"start": "14:00", "end": "21:00"}]}]
         v1 = {**document(), "schemaVersion": 1, "restMinutes": 10, "endFadeSeconds": 3, "daily": bare, "dates": dates}
         result = validate_schedule(v1, UNITS)
-        self.assertEqual(3, result["schemaVersion"])
+        self.assertEqual(4, result["schemaVersion"])
         self.assertNotIn("restMinutes", result)
-        self.assertEqual([{"start": "18:00", "end": "20:00", "mode": "cycle", "restMinutes": 10}], result["daily"])
+        self.assertEqual([cycle("18:00", "20:00", 10)], result["daily"])
         self.assertEqual("cycle", result["dates"][0]["windows"][0]["mode"])
         v2 = {**document(), "schemaVersion": 2, "daily": bare, "dates": dates}
         result = validate_schedule(v2, UNITS)
         self.assertEqual([{"start": "18:00", "end": "20:00", "mode": "continuous"}], result["daily"])
         self.assertEqual("continuous", result["dates"][0]["windows"][0]["mode"])
+        v3_window = {"start": "18:00", "end": "20:00", "mode": "cycle", "restMinutes": 5}
+        v3 = {**document(), "schemaVersion": 3, "daily": [v3_window, {"start": "20:00", "end": "21:00", "mode": "continuous"}],
+              "dates": [{"date": "2026-11-05", "windows": [v3_window]}]}
+        result = validate_schedule(v3, UNITS)
+        self.assertEqual([cycle("18:00", "20:00", 5), {"start": "20:00", "end": "21:00", "mode": "continuous"}], result["daily"])
+        self.assertEqual([cycle("18:00", "20:00", 5)], result["dates"][0]["windows"])
 
     def test_adjacent_windows_are_allowed(self):
         raw = document(daily=[{"start": "18:00", "end": "19:00", "mode": "continuous"}, {"start": "19:00", "end": "20:00", "mode": "continuous"}])
         self.assertEqual(2, len(raw["daily"]))
 
 
-CONTINUOUS = ("continuous", None)
+CONTINUOUS = ("continuous", None, None)
 
 
-def cycle(start, end, rest):
-    return {"start": start, "end": end, "mode": "cycle", "restMinutes": rest}
+def cycle(start, end, rest, runs=1):
+    return {"start": start, "end": end, "mode": "cycle", "runRounds": runs, "restMinutes": rest}
 
 
 class WindowTests(unittest.TestCase):
@@ -171,11 +181,10 @@ class WindowTests(unittest.TestCase):
 
     def test_adjacent_windows_with_different_modes_stay_apart(self):
         raw = document(daily=[{"start": "18:00", "end": "19:00", "mode": "continuous"},
-                              {"start": "19:00", "end": "20:00", "mode": "cycle", "restMinutes": 10},
-                              {"start": "20:00", "end": "21:00", "mode": "cycle", "restMinutes": 5}])
+                              cycle("19:00", "20:00", 10), cycle("20:00", "21:00", 10, runs=2)])
         self.assertEqual((datetime(2026, 11, 4, 18), datetime(2026, 11, 4, 19), CONTINUOUS),
                          current_window(raw, datetime(2026, 11, 4, 18, 30)))
-        self.assertEqual((datetime(2026, 11, 4, 19), datetime(2026, 11, 4, 20), ("cycle", 10)),
+        self.assertEqual((datetime(2026, 11, 4, 19), datetime(2026, 11, 4, 20), ("cycle", 10, 1)),
                          current_window(raw, datetime(2026, 11, 4, 19, 30)))
         self.assertEqual(datetime(2026, 11, 4, 19), next_show(raw, datetime(2026, 11, 4, 18, 30)))
         self.assertEqual(datetime(2026, 11, 4, 20), next_show(raw, datetime(2026, 11, 4, 19, 30)))
@@ -336,15 +345,33 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(("play", True), (frame.phase, frame.restart))
         self.assertEqual({"enabled": True, "phase": "play", "mode": "cycle"}, run.scheduler.summary())
         status = run.scheduler.status()
-        self.assertEqual(("cycle", 2, "cycle", 1), (status["mode"], status["round"], status["window"]["mode"],
-                                                   status["window"]["restMinutes"]))
+        self.assertEqual(("cycle", 1, 1, "cycle", 1), (status["mode"], status["round"], status["runRounds"],
+                                                      status["window"]["mode"], status["window"]["restMinutes"]))
+
+    def test_cycle_runs_several_rounds_before_resting(self):
+        run = Run(document(spinUpSeconds=1, daily=[cycle("18:00", "20:00", 1, runs=3)]), SHOW)
+        run.step(4)
+        self.assertTrue(run.step().restart)
+        run.step(23)  # three 8-frame rounds back to back: the looping playback carries on, no restart
+        self.assertEqual(["play"] * 24, run.phases(4))
+        self.assertEqual([True] + [False] * 23, [frame.restart for frame in run.frames[4:]])
+        self.assertTrue(all(frame.motors == MAX_CW for frame in run.frames[4:]))
+        self.assertEqual(list(range(24)), run.positions[4:])
+        frame = run.step()
+        self.assertEqual(("rest", STOP_CW), (frame.phase, frame.motors))
+        run2 = Run(document(spinUpSeconds=1, daily=[cycle("18:00", "20:00", 1, runs=3)]), SHOW)
+        run2.step(4 + 1 + 10)  # playback 10: second round
+        status = run2.scheduler.status()
+        self.assertEqual((2, 3), (status["round"], status["runRounds"]))
+        self.assertEqual((SHOW + timedelta(seconds=(4 + 1 + 10) / 4 + (24 - 10) / 4)).isoformat(timespec="seconds"),
+                         status["phaseEndsAt"])
 
     def test_cycle_zero_rest_replays_without_spin_up(self):
         run = Run(document(spinUpSeconds=1, daily=[cycle("18:00", "20:00", 0)]), SHOW)
         run.step(4 + 8)
         frame = run.step()
         self.assertEqual(("play", True, MAX_CW), (frame.phase, frame.restart, frame.motors))
-        self.assertEqual(2, run.scheduler.status()["round"])
+        self.assertEqual(1, run.scheduler.status()["round"])
 
     def test_cycle_zero_spin_up_plays_immediately(self):
         frame = Run(document(spinUpSeconds=0, daily=[cycle("18:00", "20:00", 10)]), SHOW).step()

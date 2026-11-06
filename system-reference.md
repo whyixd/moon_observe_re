@@ -162,20 +162,20 @@ off ──「涵蓋時段開始的那一輪」開始前 spinUpSeconds 秒──�
 run ──時段結束、這一輪還沒播完──▶ finishing（馬達繼續轉）──▶ 這一輪播完 ──▶ off
 run ──時段結束時剛好是一輪的開頭──▶ off
 
-循環（cycle，restMinutes）
-時段開始 ──▶ spinup（馬達轉、燈照常，spinUpSeconds）──▶ play（從第 1 段播放一輪）
-play ──播完一輪──▶ rest（馬達停、燈照常，restMinutes）──▶ spinup ──▶ play（從第 1 段重播）…
+循環（cycle，runRounds、restMinutes）
+時段開始 ──▶ spinup（馬達轉、燈照常，spinUpSeconds）──▶ play（從第 1 段連續播放 runRounds 輪）
+play ──播完 runRounds 輪──▶ rest（馬達停、燈照常，restMinutes）──▶ spinup ──▶ play（從第 1 段重播）…
 任何階段 ──時段結束──▶ off（馬達立刻停）
 ```
 
 - 「一輪」= `output.round_length`：串接為所有段落加總；單一效果至少 60 秒並對齊效果週期（與天氣造訪相同）。
 - **持續**：播放位置是一輪長度的整數倍時就是新一輪的開頭，排程不重播。「涵蓋時段開始的那一輪」是開始時間或之前最近的一個輪開頭（剛好在開始時間就是那一輪）；每格依目前播放位置推算 `covering = floor((到開始時間的影格 + 位置) / 輪長) × 輪長 − 位置`，`covering ≤ spinUpSeconds × fps` 時啟動馬達並記住這個時段（`armed_for`），之後就算播放重新開始讓輪的邊界移動，馬達也不會停下。時段內不休息；結束時這一輪沒播完就播完才停（最多超過一輪），播放重新開始也算這一輪結束。
-- **循環**（同 v0.2.0，但燈不再變暗）：暖機、休息用**輸出影格**計數；暖機結束那一格回傳 `restart`，輸出迴圈 `playback_start_frame = frame` 從第 1 段重播。`restMinutes = 0` 時馬達一直轉，播完直接重播、不再暖機；`spinUpSeconds = 0` 時立即播放。
+- **循環**（同 v0.2.0，但燈不再變暗、可以連續播多輪）：暖機、休息用**輸出影格**計數；暖機結束那一格回傳 `restart`，輸出迴圈 `playback_start_frame = frame` 從第 1 段重播；之後串接照常循環，播放位置達到 `runRounds × 輪長` 時進入休息。`restMinutes = 0` 時馬達一直轉，播完直接重播、不再暖機；`spinUpSeconds = 0` 時立即播放。
 - 程式在時段中途啟動或啟用排程時：持續時段馬達立即啟動（「涵蓋的那一輪」已開始也一樣）；循環時段和時段開始一樣先暖機再從第 1 段播放。
 - 時段外、休息中的馬達送 `stop` 並保留排程的方向，避免減速時反轉。
-- 時段用後端電腦的**本地時間**（`datetime.now()`）判斷，起點包含、終點不包含；時段不跨午夜。相鄰而且模式（與休息分鐘）相同的時段（含 `22:00–24:00` 接隔天 `00:00–02:00`）視為同一段；模式不同的相鄰時段各自處理：持續接循環時，循環時段一開始就暖機並從第 1 段重播；循環接持續時，馬達不停、直接進入 run。持續時段的預備期只在時段外計算。
+- 時段用後端電腦的**本地時間**（`datetime.now()`）判斷，起點包含、終點不包含；時段不跨午夜。相鄰而且模式（與輪數、休息分鐘）相同的時段（含 `22:00–24:00` 接隔天 `00:00–02:00`）視為同一段；模式不同的相鄰時段各自處理：持續接循環時，循環時段一開始就暖機並從第 1 段重播；循環接持續時，馬達不停、直接進入 run。持續時段的預備期只在時段外計算。
 - 排程啟用時 `PUT /api/motor` 回 409；單色測試照常可用；天氣與造訪不受影響。
-- 版本：v0.2.0（Schedule v1）所有時段都是循環、時段外全暗、結束時淡出；v0.3.0（v2）所有時段都是持續；v0.4.0（v3）每段選模式。讀到 v1 時每段轉成循環（沿用 `restMinutes`），v2 每段轉成持續。
+- 版本：v0.2.0（Schedule v1）所有時段都是循環、時段外全暗、結束時淡出；v0.3.0（v2）所有時段都是持續；v0.4.0（v3）每段選模式；v0.5.0（v4）循環時段可設運轉輪數。讀到 v1 時每段轉成循環 1 輪（沿用 `restMinutes`），v2 每段轉成持續，v3 的循環時段補上 `runRounds: 1`。
 
 ---
 
@@ -297,7 +297,7 @@ frontend/src/
 | 色彩 | 天氣啟用時：顏色來源〔天氣色盤｜自訂顏色〕、漸層方向、中途切換方向、目前天氣色票、`<details>` 備援顏色；否則：〔純色｜漸層〕、色彩／漸層編輯 |
 | 串接 | 模擬模式：`SequenceEditor`（段落清單、增刪複製移動、播放規則、轉場、結尾、儲存／重新載入）；後端控制模式：`SavedSequenceView`（唯讀＋從頭播放） |
 | 後端 | 播放進度；後端控制模式下：連線狀態（控制器數、燈數 × 台數、版本）、重新讀取／套用、重新播放〔串接｜單一效果〕、`MotorPanel`（送到後端，顯示實際 DMX 值；排程啟用時唯讀）、單色測試 |
-| 排程 | `SchedulePanel`：目前階段與倒數（含預估的馬達啟動時間）、後端時間與今天的時段、啟用開關、馬達暖機秒數、時段內每台的馬達、每日時段、特殊日期（多段或「當天不表演」，過期變灰）；每個時段選持續或循環（循環再填休息分鐘）；儲存前即時驗證 |
+| 排程 | `SchedulePanel`：目前階段與倒數（含預估的馬達啟動時間）、後端時間與今天的時段、啟用開關、馬達暖機秒數、時段內每台的馬達、每日時段、特殊日期（多段或「當天不表演」，過期變灰）；每個時段選持續或循環（循環再填運轉輪數與休息分鐘）；儲存前即時驗證 |
 | 天氣 | `WeatherPanel`：目前天氣與來源、手動測試天氣（類別＋氣溫，10 分鐘）、立即造訪／結束造訪、色盤頁連結 |
 | 物理 | 模擬模式下的 `MotorPanel`（只影響 3D 畫面）、Mid speed、Max speed、Controller rate、Camera exposure、Visual persistence、Temporal samples；「全部」視角時另有 Unit phase step、Effect frame step（有天氣時停用） |
 
@@ -339,8 +339,8 @@ frontend/src/
 | PUT | `/api/sequence` | Sequence v1 | 原子覆寫 `sequence.json`，切回串接模式並從頭播放 |
 | PUT | `/api/playback/restart` | `{"source":"sequence"\|"single"}` | 從第 0 影格重播，不改檔 |
 | GET | `/api/playback` | `{active:false}` 或 `{active, mode, restart, fps, ageMs, frame, motor:[{speed,direction}×N], schedule:{enabled,phase,mode}, ...}` | 輸出迴圈目前位置；串接含 step/transition/ending，單一含 cycle；單色測試時附 `unitColors`；`motor` 是實際送出的值（排程啟用時為排程的馬達） |
-| GET | `/api/schedule` | `{revision, schedule, status}` | 排程（Schedule v3，檔案不存在時為關閉的預設）與狀態：`status = {now, running, phase, mode, round, phaseEndsAt, window, today, nextShowAt, motorStartAt}`；`phase` 為 `disabled`／`off`，持續時段 `spinup`／`run`／`finishing`，循環時段 `spinup`／`play`／`rest`；輸出迴圈沒在跑時為 `null`。`round` 是循環時段的第幾輪；`phaseEndsAt` 是這個階段結束的時間（持續時段的 run 沒有）；`motorStartAt` 是時段外預估的馬達啟動時間 |
-| PUT | `/api/schedule` | Schedule v3 → 同 GET | 原子覆寫 `schedule.json`，下一格依新設定判斷階段 |
+| GET | `/api/schedule` | `{revision, schedule, status}` | 排程（Schedule v4，檔案不存在時為關閉的預設）與狀態：`status = {now, running, phase, mode, round, runRounds, phaseEndsAt, window, today, nextShowAt, motorStartAt}`；`phase` 為 `disabled`／`off`，持續時段 `spinup`／`run`／`finishing`，循環時段 `spinup`／`play`／`rest`；輸出迴圈沒在跑時為 `null`。`round`／`runRounds` 是循環時段播放中這一次運轉的第幾輪／共幾輪；`phaseEndsAt` 是這個階段結束的時間（持續時段的 run 沒有）；`motorStartAt` 是時段外預估的馬達啟動時間 |
+| PUT | `/api/schedule` | Schedule v4 → 同 GET | 原子覆寫 `schedule.json`，下一格依新設定判斷階段 |
 | GET | `/api/weather` | 天氣 snapshot（見 6.4）或 `{"enabled":false}` | |
 | PUT/DELETE | `/api/weather/override` | `{"category":"clear"\|"cloudy"\|"rain","temperatureC":-100..70}` | 手動測試天氣 10 分鐘（直接影響實機） |
 | PUT/DELETE | `/api/weather/visit` | `{"index": n}` | 立即造訪／結束造訪 |
@@ -484,16 +484,16 @@ longitude = 139.6503
 - `axis` 只允許 `strip`／`radius`，且只用於純色效果（漸層效果保留自己的方向）。
 - 內建預設（`palette.DEFAULT_PALETTE`）：<18°C 冷色、18–27°C 中性、≥28°C 暖色。
 
-### 5.5 Schedule v3
+### 5.5 Schedule v4
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "enabled": true,
   "spinUpSeconds": 5,
   "motors": [{ "unitId": 1, "speed": "max", "direction": "cw" }],
   "daily": [
-    { "start": "14:00", "end": "18:00", "mode": "cycle", "restMinutes": 10 },
+    { "start": "14:00", "end": "18:00", "mode": "cycle", "runRounds": 5, "restMinutes": 10 },
     { "start": "18:00", "end": "22:00", "mode": "continuous" }
   ],
   "dates": [
@@ -503,9 +503,9 @@ longitude = 139.6503
 }
 ```
 
-- 六個欄位缺一不可；`spinUpSeconds`（持續時段：馬達在那一輪開始前幾秒啟動；循環時段：暖機秒數）0–30。v1、v2 檔案仍可讀取（轉換規則見 1.8），下次存檔時寫成 v3。
+- 六個欄位缺一不可；`spinUpSeconds`（持續時段：馬達在那一輪開始前幾秒啟動；循環時段：暖機秒數）0–30。v1–v3 檔案仍可讀取（轉換規則見 1.8），下次存檔時寫成 v4。
 - `motors`：每台一筆（`unitId` 1..N 不重複），`speed` 只能 `mid`／`max`，`direction` 為 `cw`／`ccw`。
-- 時段 `HH:MM`，`start` 00:00–23:59、`end` 最晚 `24:00` 且晚於 `start`；同一天最多 8 段、不能重疊（可以相鄰）。`mode` 為 `continuous` 或 `cycle`；`cycle` 必須有 `restMinutes`（0–240 的整數），`continuous` 不能有。
+- 時段 `HH:MM`，`start` 00:00–23:59、`end` 最晚 `24:00` 且晚於 `start`；同一天最多 8 段、不能重疊（可以相鄰）。`mode` 為 `continuous` 或 `cycle`；`cycle` 必須有 `runRounds`（1–99 的整數）與 `restMinutes`（0–240 的整數），`continuous` 兩個都不能有。
 - `dates`：最多 400 天、`YYYY-MM-DD` 不重複；有列出的日期**取代**當天的 `daily`，`windows: []` = 當天不表演（馬達整天不轉，燈照常）。
 - 正規化時 `motors` 依 `unitId`、時段依開始時間、`dates` 依日期排序；過期日期保留。行為見 1.8。
 

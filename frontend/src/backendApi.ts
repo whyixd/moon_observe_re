@@ -47,13 +47,13 @@ export type ScheduleSummary = {
   mode?: ScheduleMode | null
 }
 
-/** 持續：整段一直轉；循環：播一輪、休息 restMinutes 分鐘（只在 cycle 時有）。 / restMinutes only for cycle. */
-export type ScheduleWindow = { start: string; end: string; mode: ScheduleMode; restMinutes?: number }
+/** 持續：整段一直轉；循環：連續播 runRounds 輪、休息 restMinutes 分鐘（兩者只在 cycle 時有）。 / cycle only. */
+export type ScheduleWindow = { start: string; end: string; mode: ScheduleMode; runRounds?: number; restMinutes?: number }
 
 export type ScheduleMotor = { unitId: number; speed: Exclude<MotorSpeed, 'stop'>; direction: MotorDirection }
 
 export type ScheduleDocument = {
-  schemaVersion: 3
+  schemaVersion: 4
   enabled: boolean
   /** 馬達在燈光一輪開始前幾秒先啟動。 / Seconds the motors start before the round. */
   spinUpSeconds: number
@@ -69,8 +69,9 @@ export type ScheduleStatus = {
   phase: SchedulePhase | null
   /** 目前跟隨的時段模式。 / Mode of the window the motors follow. */
   mode: ScheduleMode | null
-  /** 循環時段：這個時段第幾輪。 / Cycle windows: round number. */
+  /** 循環時段播放中：這一次運轉的第幾輪／共幾輪。 / Cycle play: round within the run, and rounds per run. */
   round: number | null
+  runRounds?: number | null
   /** 這個階段結束的時間（持續時段的 run 沒有）。 / When the phase ends (none for continuous run). */
   phaseEndsAt: string | null
   /** 正在運轉或即將開始的時段。 / The window the motors are running for (or about to). */

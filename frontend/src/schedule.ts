@@ -6,6 +6,7 @@ export const MAX_WINDOWS_PER_DAY = 8
 export const MAX_DATES = 400
 export const MAX_SPIN_UP_SECONDS = 30
 export const MAX_REST_MINUTES = 240
+export const MAX_RUN_ROUNDS = 99
 
 export const PHASE_LABELS: Record<SchedulePhase, string> = {
   disabled: '排程關閉',
@@ -44,6 +45,10 @@ export function windowProblems(windows: ScheduleWindow[], label: string): string
     const start = timeToMinutes(window.start)
     const end = timeToMinutes(window.end, true)
     if (window.mode === 'cycle') {
+      const runs = window.runRounds ?? Number.NaN
+      if (!(Number.isInteger(runs) && runs >= 1 && runs <= MAX_RUN_ROUNDS)) {
+        problems.push(`${label}第 ${index + 1} 段的運轉輪數要是 1–${MAX_RUN_ROUNDS} 的整數`)
+      }
       const rest = window.restMinutes ?? Number.NaN
       if (!(Number.isInteger(rest) && rest >= 0 && rest <= MAX_REST_MINUTES)) {
         problems.push(`${label}第 ${index + 1} 段的休息時間要是 0–${MAX_REST_MINUTES} 的整數分鐘`)
@@ -86,7 +91,7 @@ export function scheduleProblems(document: ScheduleDocument): string[] {
 /** 存檔前排序（與後端正規化相同），讓「有沒有變更」的比較穩定。 / Sort like the backend normalizes. */
 export function normalizeSchedule(document: ScheduleDocument): ScheduleDocument {
   const clean = (window: ScheduleWindow): ScheduleWindow => window.mode === 'cycle'
-    ? { start: window.start, end: window.end, mode: 'cycle', restMinutes: window.restMinutes }
+    ? { start: window.start, end: window.end, mode: 'cycle', runRounds: window.runRounds, restMinutes: window.restMinutes }
     : { start: window.start, end: window.end, mode: window.mode }
   const byStart = (windows: ScheduleWindow[]) => windows.map(clean).sort((a, b) => a.start.localeCompare(b.start))
   return {
@@ -147,14 +152,14 @@ export function describeStatus(status: ScheduleStatus, elapsedMs: number): strin
     }
     case 'spinup':
       return status.mode === 'cycle'
-        ? `馬達暖機 · ${after}燈光從第 1 段播放第 ${(status.round ?? 0) + 1} 輪${windowText}`
+        ? `馬達暖機 · ${after}燈光從第 1 段開始播放${window?.runRounds ? ` ${window.runRounds} 輪` : ''}${windowText}`
         : `馬達暖機 · ${after}燈光進入新一輪${windowText}`
     case 'run':
       return `馬達運轉中${windowText}（結束時播完當輪才停）`
     case 'finishing':
       return `收尾中 · 時段已結束，${after}播完這一輪馬達停止`
     case 'play':
-      return `表演中 · 第 ${status.round ?? 1} 輪${remaining === null ? '' : `，剩 ${formatDuration(remaining)}`}${windowText}`
+      return `表演中 · 第 ${status.round ?? 1}${status.runRounds ? `／${status.runRounds}` : ''} 輪${remaining === null ? '' : `，${formatDuration(remaining)}後休息`}${windowText}`
     case 'rest':
       return `休息中 · 馬達停、燈光照常 · ${after}暖機開始下一輪${windowText}`
     default:

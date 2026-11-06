@@ -3,8 +3,8 @@
 定時播放：排程啟用時燈光全天循環播放，排程只控制馬達。每個時段各自選模式：
 - 持續（continuous）：在「涵蓋時段開始時間的那一輪」開始前 spinUpSeconds 秒先啟動，一直轉到時段結束；
   結束時若這一輪還沒播完，播完才停。
-- 循環（cycle）：時段開始時馬達啟動，暖機 spinUpSeconds 秒後燈光從第 1 段播放一輪，播完休息 restMinutes 分鐘
-  （馬達停、燈照常），休息後再暖機、從第 1 段重播；時段結束時馬達立刻停止。
+- 循環（cycle）：時段開始時馬達啟動，暖機 spinUpSeconds 秒後燈光從第 1 段連續播放 runRounds 輪，播完休息
+  restMinutes 分鐘（馬達停、燈照常），休息後再暖機、從第 1 段重播；時段結束時馬達立刻停止。
 The document is stored in ``schedule.json`` (atomic writes); the state machine is advanced by the output loop once
 per frame. Continuous windows align to the looping playback's rounds; cycle windows count output frames.
 """
@@ -26,9 +26,10 @@ from typing import Any, Callable, Mapping
 
 from .hardware import DIRECTIONS
 
-SCHEDULE_SCHEMA_VERSION = 3
+SCHEDULE_SCHEMA_VERSION = 4
 SCHEDULE_FIELDS = {"schemaVersion", "enabled", "spinUpSeconds", "motors", "daily", "dates"}
-# v1 (v0.2.0): every window cycled with one restMinutes, plus an end fade. v2 (v0.3.0): every window continuous.
+# v1 (v0.2.0): every window cycled one round with one restMinutes, plus an end fade. v2 (v0.3.0): every window
+# continuous. v3 (v0.4.0): per-window mode, cycle windows ran one round. v4 adds runRounds to cycle windows.
 LEGACY_V1_FIELDS = {"restMinutes", "endFadeSeconds"}
 WINDOW_MODES = ("continuous", "cycle")
 SCHEDULE_SPEEDS = ("mid", "max")  # A show always spins; "stop" is what the motors do outside the windows.
@@ -36,11 +37,12 @@ MAX_WINDOWS_PER_DAY = 8
 MAX_DATES = 400
 MAX_SPIN_UP_SECONDS = 30
 MAX_REST_MINUTES = 240
+MAX_RUN_ROUNDS = 99
 NEXT_SHOW_HORIZON_DAYS = 400
 _TIME = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 Motors = tuple[tuple[str, str], ...]
-Spec = tuple[str, int | None]  # (mode, restMinutes for cycle windows)
+Spec = tuple[str, int | None, int | None]  # (mode, restMinutes, runRounds); both None for continuous
 Window = tuple[datetime, datetime, Spec]
 
 
@@ -77,16 +79,20 @@ def _windows(raw: Any, name: str) -> list[dict[str, Any]]:
     for index, window in enumerate(raw):
         label = f"{name}[{index}]"
         mode = window.get("mode") if isinstance(window, dict) else None
-        keys = {"start", "end", "mode"} | ({"restMinutes"} if mode == "cycle" else set())
+        keys = {"start", "end", "mode"} | ({"runRounds", "restMinutes"} if mode == "cycle" else set())
         if not isinstance(window, dict) or mode not in WINDOW_MODES or set(window) != keys:
             raise ValueError(f"{label} must be {{\"start\", \"end\", \"mode\": \"continuous\"}} "
-                             f"or {{\"start\", \"end\", \"mode\": \"cycle\", \"restMinutes\"}}")
+                             f"or {{\"start\", \"end\", \"mode\": \"cycle\", \"runRounds\", \"restMinutes\"}}")
         start = _minutes(window["start"], f"{label}.start", end=False)
         finish = _minutes(window["end"], f"{label}.end", end=True)
         if finish <= start:
             raise ValueError(f"{label} must end after it starts (windows do not cross midnight)")
         clean: dict[str, Any] = {"start": window["start"], "end": window["end"], "mode": mode}
         if mode == "cycle":
+            runs = window["runRounds"]
+            if type(runs) is not int or not 1 <= runs <= MAX_RUN_ROUNDS:
+                raise ValueError(f"{label}.runRounds must be an integer in 1..{MAX_RUN_ROUNDS}")
+            clean["runRounds"] = runs
             clean["restMinutes"] = _number(window["restMinutes"], f"{label}.restMinutes", MAX_REST_MINUTES, integer=True)
         windows.append((start, finish, clean))
     windows.sort(key=lambda item: item[0])
@@ -97,21 +103,29 @@ def _windows(raw: Any, name: str) -> list[dict[str, Any]]:
 
 
 def _upgrade(raw: Any) -> Any:
-    """v1 → every window cycles with its restMinutes; v2 → every window continuous. Others pass through."""
+    """v1 → every window cycles one round with its restMinutes; v2 → every window continuous; v3 → cycle
+    windows run one round. Others pass through."""
     if not isinstance(raw, dict) or type(raw.get("schemaVersion")) is not int:
         return raw
-    if raw["schemaVersion"] == 1 and set(raw) == SCHEDULE_FIELDS | LEGACY_V1_FIELDS:
-        extra: dict[str, Any] = {"mode": "cycle", "restMinutes": raw["restMinutes"]}
-    elif raw["schemaVersion"] == 2 and set(raw) == SCHEDULE_FIELDS:
-        extra = {"mode": "continuous"}
+    version = raw["schemaVersion"]
+    if version == 1 and set(raw) == SCHEDULE_FIELDS | LEGACY_V1_FIELDS:
+        def window(item: dict[str, Any]) -> dict[str, Any]:
+            return {**item, "mode": "cycle", "runRounds": 1, "restMinutes": raw["restMinutes"]} \
+                if set(item) == {"start", "end"} else item
+    elif version == 2 and set(raw) == SCHEDULE_FIELDS:
+        def window(item: dict[str, Any]) -> dict[str, Any]:
+            return {**item, "mode": "continuous"} if set(item) == {"start", "end"} else item
+    elif version == 3 and set(raw) == SCHEDULE_FIELDS:
+        def window(item: dict[str, Any]) -> dict[str, Any]:
+            return {**item, "runRounds": 1} \
+                if item.get("mode") == "cycle" and set(item) == {"start", "end", "mode", "restMinutes"} else item
     else:
         return raw
 
     def windows(items: Any) -> Any:
         if not isinstance(items, list):
             return items
-        return [{**item, **extra} if isinstance(item, dict) and set(item) == {"start", "end"} else item
-                for item in items]
+        return [window(item) if isinstance(item, dict) else item for item in items]
 
     dates = raw["dates"]
     if isinstance(dates, list):
@@ -123,7 +137,7 @@ def _upgrade(raw: Any) -> Any:
 
 
 def validate_schedule(raw: Any, unit_count: int) -> dict[str, Any]:
-    """Strict check; v1 (v0.2.0) and v2 (v0.3.0) documents are accepted and returned as v3."""
+    """Strict check; v1–v3 (v0.2.0–v0.4.0) documents are accepted and returned as v4."""
     raw = _upgrade(raw)
     if not isinstance(raw, dict) or set(raw) != SCHEDULE_FIELDS:
         raise ValueError(f"schedule must contain exactly {', '.join(sorted(SCHEDULE_FIELDS))}")
@@ -174,7 +188,11 @@ def validate_schedule(raw: Any, unit_count: int) -> dict[str, Any]:
 
 
 def _spec(window: Mapping[str, Any]) -> Spec:
-    return window["mode"], window.get("restMinutes")
+    return window["mode"], window.get("restMinutes"), window.get("runRounds")
+
+
+def _spec_json(spec: Spec) -> dict[str, Any]:
+    return {"mode": spec[0]} if spec[0] != "cycle" else {"mode": "cycle", "runRounds": spec[2], "restMinutes": spec[1]}
 
 
 def windows_on(document: Mapping[str, Any], day: date) -> list[Window]:
@@ -218,11 +236,8 @@ def next_show(document: Mapping[str, Any], now: datetime) -> datetime | None:
 def window_json(window: Window | None) -> dict[str, Any] | None:
     if window is None:
         return None
-    result: dict[str, Any] = {"start": window[0].isoformat(timespec="minutes"),
-                              "end": window[1].isoformat(timespec="minutes"), "mode": window[2][0]}
-    if window[2][0] == "cycle":
-        result["restMinutes"] = window[2][1]
-    return result
+    return {"start": window[0].isoformat(timespec="minutes"), "end": window[1].isoformat(timespec="minutes"),
+            **_spec_json(window[2])}
 
 
 class ScheduleStore:
@@ -296,8 +311,9 @@ class Scheduler:
     whenever the playback position is a multiple of the round length, so a playback restart moves the
     boundaries and the next ones are recomputed.
 
-    Cycle window: spinup (``spinUpSeconds``) → play (restart from step 1, one round) → rest (``restMinutes``)
-    → spinup → …; ``restMinutes`` 0 replays at once without spin-up. The window end stops the motors at once.
+    Cycle window: spinup (``spinUpSeconds``) → play (restart from step 1, ``runRounds`` rounds back to back) →
+    rest (``restMinutes``) → spinup → …; ``restMinutes`` 0 replays at once without spin-up. The window end
+    stops the motors at once.
 
     Starting mid-window (or enabling then) behaves like the window start: continuous spins at once, cycle
     spins up and then replays from step 1.
@@ -315,13 +331,13 @@ class Scheduler:
         self.mode: str | None = None              # "continuous" / "cycle" while the motors follow a window.
         self.cycle_window: Window | None = None   # The cycle window being played.
         self.elapsed = 0                          # Output frames in the current cycle phase.
-        self.round = 0                            # Rounds started in the current cycle window.
+        self.round = 0                            # Round within the current cycle run (1..runRounds).
         self.armed_for: datetime | None = None    # Continuous window start the motors already started for.
         self.finish_round: int | None = None      # Round index being finished after a continuous window.
         self.last_playback = 0
         self._next_cache: tuple[Mapping[str, Any], datetime, datetime | None] | None = None
-        # (phase, mode, round, frames to phase end, motors, clock, frames to next motor start, window)
-        self._sample: tuple[str, str | None, int | None, int | None, Motors | None, float, int | None,
+        # (phase, mode, (round, runRounds), frames to phase end, motors, clock, frames to next motor start, window)
+        self._sample: tuple[str, str | None, tuple[int, int] | None, int | None, Motors | None, float, int | None,
                             Window | None] | None = None
 
     def _motors(self, document: Mapping[str, Any], spinning: bool) -> Motors:
@@ -357,13 +373,15 @@ class Scheduler:
                playback_frame: int) -> ScheduleFrame:
         spin_frames = max(0, round(document["spinUpSeconds"] * self.fps))
         rest_frames = window[2][1] * 60 * self.fps
+        runs = window[2][2]
+        length = max(1, round_frames)
         if self.mode != "cycle" or self.cycle_window != window:
             self.mode, self.cycle_window, self.round = "cycle", window, 0
             self.armed_for = self.finish_round = None
             self._enter("spinup")
         else:
             self.elapsed += max(0, frames)
-            if self.phase == "play" and playback_frame >= round_frames:
+            if self.phase == "play" and playback_frame >= runs * length:
                 if rest_frames == 0:
                     self._enter("spinup")  # Motors never stopped: replay at once below.
                     self.elapsed = spin_frames
@@ -373,17 +391,18 @@ class Scheduler:
                 self._enter("spinup")
         restart = False
         if self.phase == "spinup" and self.elapsed >= spin_frames:
-            self.round += 1
             self._enter("play")
             restart = True
+        position = 0 if restart else playback_frame
+        self.round = min(runs, position // length + 1) if self.phase == "play" else 0
         remaining = {
             "spinup": spin_frames - self.elapsed,
-            "play": round_frames - (0 if restart else playback_frame),
+            "play": runs * length - position,
             "rest": rest_frames - self.elapsed,
         }[self.phase]
         self.last_playback = 0 if restart else playback_frame
         frame = ScheduleFrame(self.phase, self._motors(document, self.phase != "rest"), restart)
-        return self._publish(frame, self.round, max(0, remaining), None, window)
+        return self._publish(frame, (self.round, runs) if self.round else None, max(0, remaining), None, window)
 
     def _continuous(self, document: Mapping[str, Any], now: datetime, window: Window | None, round_frames: int,
                     playback_frame: int) -> ScheduleFrame:
@@ -438,9 +457,9 @@ class Scheduler:
         frame = ScheduleFrame(phase, self._motors(document, phase != "off"))
         return self._publish(frame, None, remaining, start_in, governing)
 
-    def _publish(self, frame: ScheduleFrame, rounds: int | None, remaining: int | None, start_in: int | None,
+    def _publish(self, frame: ScheduleFrame, rounds: tuple[int, int] | None, remaining: int | None, start_in: int | None,
                  window: Window | None) -> ScheduleFrame:
-        sample = (frame.phase, self.mode, rounds or None, remaining, frame.motors, self.clock(), start_in, window)
+        sample = (frame.phase, self.mode, rounds, remaining, frame.motors, self.clock(), start_in, window)
         with self.lock:
             self._sample = sample
         return frame
@@ -480,19 +499,16 @@ class Scheduler:
             window = current_window(document, now)
         today = []
         for start, end, spec in windows_on(document, now.date()):
-            entry: dict[str, Any] = {"start": start.strftime("%H:%M"),
-                                     "end": "24:00" if end.date() > now.date() else end.strftime("%H:%M"),
-                                     "mode": spec[0]}
-            if spec[0] == "cycle":
-                entry["restMinutes"] = spec[1]
-            today.append(entry)
+            today.append({"start": start.strftime("%H:%M"),
+                          "end": "24:00" if end.date() > now.date() else end.strftime("%H:%M"), **_spec_json(spec)})
         running = sample is not None and sample[0] != "disabled"
         return {
             "now": now.isoformat(timespec="seconds"),
             "running": sample is not None,
             "phase": ("disabled" if not document["enabled"] else None) if sample is None else sample[0],
             "mode": sample[1] if running else None,
-            "round": sample[2] if running else None,
+            "round": sample[2][0] if running and sample[2] else None,     # Cycle play: round within the run.
+            "runRounds": sample[2][1] if running and sample[2] else None,
             "phaseEndsAt": at(sample[3]) if running else None,
             "window": window_json(window),
             "today": today,

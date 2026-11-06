@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "enabled": true,
   "spinUpSeconds": 5,
   "motors": [
@@ -34,6 +34,7 @@
       "start": "14:00",
       "end": "18:00",
       "mode": "cycle",
+      "runRounds": 5,
       "restMinutes": 10
     },
     {
