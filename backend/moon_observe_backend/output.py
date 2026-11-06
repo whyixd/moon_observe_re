@@ -80,8 +80,8 @@ def stream(
     Every unit gets one 512-byte frame per output frame (``hardware.build_payload``), sent unchanged to
     each of its universes. ``motor_provider`` returns (speed, direction) per unit (index = unit_id - 1);
     without it every motor stays stopped. On exit every universe gets the all-zero frame twice.
-    ``scheduler`` (timed shows) overrides the motors only, aligned to the looping playback's rounds; the
-    lights are never touched. While it is disabled the output is exactly as without it.
+    ``scheduler`` (timed shows) overrides the motors and, in cycle windows, restarts playback from step 1
+    after each spin-up; it never dims the lights. While it is disabled the output is exactly as without it.
     """
     if seconds is not None and (not math.isfinite(seconds) or seconds <= 0):
         raise ValueError("seconds must be positive and finite")
@@ -133,9 +133,13 @@ def stream(
             show = None
             if scheduler is not None:
                 show = scheduler.advance(
+                    0 if last_frame is None else frame - last_frame,
                     round_length(schedule, active_preset, fps, unit_count)[0],
                     frame - playback_start_frame,
                 )
+                if show.restart:  # Cycle window: replay from step 1 once the motors are up to speed.
+                    playback_start_frame = frame
+                    restarted = True
                 if show.phase == "disabled":
                     show = None
             if playback_advance is not None:

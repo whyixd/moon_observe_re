@@ -606,14 +606,17 @@ input[type="range"] {
 /* 定時播放 / Timed shows */
 .schedule-controls { display: grid; gap: 0.6rem; }
 .schedule-controls > .control-label { margin-top: 0.6rem; }
-.schedule-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.schedule-numbers { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
 .schedule-numbers .sequence-field { margin-top: 0; font-size: 0.78rem; }
 .schedule-motor-row { margin-top: 0; }
 .schedule-motor-row .motor-speeds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .schedule-windows { display: grid; gap: 0.35rem; }
-.schedule-window-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; gap: 0.4rem; align-items: center; color: #8093a8; }
-.schedule-window-row input, .schedule-date-head input[type="date"] {
-  width: 100%;
+.schedule-window-row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; color: #8093a8; }
+.schedule-window-row > input { width: 4.6rem; }
+.schedule-window-row > button { margin-left: auto; }
+.schedule-rest { display: inline-flex; gap: 0.3rem; align-items: center; font-size: 0.8rem; }
+.schedule-rest input { width: 4rem; }
+.schedule-window-row input, .schedule-window-row select, .schedule-date-head input[type="date"] {
   padding: 0.4rem 0.55rem;
   border: 1px solid #303a48;
   border-radius: 0.45rem;
@@ -621,6 +624,7 @@ input[type="range"] {
   background: #111721;
   color-scheme: dark;
 }
+.schedule-date-head input[type="date"] { width: 100%; }
 .schedule-add { justify-self: start; }
 .schedule-dates { display: grid; gap: 0.6rem; margin: 0; padding: 0; list-style: none; }
 .schedule-dates li { display: grid; gap: 0.4rem; padding: 0.6rem; border: 1px solid #242c37; border-radius: 0.55rem; }

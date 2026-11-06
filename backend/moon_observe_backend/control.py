@@ -118,7 +118,7 @@ def make_server(
         def _schedule_summary(self) -> dict[str, Any]:
             if scheduler is not None:
                 return scheduler.summary()
-            return {"enabled": schedule_store.enabled(), "phase": None}
+            return {"enabled": schedule_store.enabled(), "phase": None, "mode": None}
 
         def _schedule_state(self) -> dict[str, Any]:
             result = schedule_store.state()

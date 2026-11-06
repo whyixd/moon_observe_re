@@ -31,22 +31,29 @@ export type BackendHardwareState = {
 
 export type BackendTarget = { unitId: number; ip: string; universes: number[] }
 
-/** off：時段外馬達停（燈照常）；spinup：馬達已啟動、等涵蓋時段開始的那一輪；run：運轉中；finishing：時段已結束、播完這一輪才停。 */
-export type SchedulePhase = 'disabled' | 'off' | 'spinup' | 'run' | 'finishing'
+/**
+ * off：時段外馬達停（燈照常）。持續時段：spinup（馬達已啟動、等涵蓋時段開始的那一輪）、run、finishing（時段已結束、播完這一輪才停）。
+ * 循環時段：spinup（暖機）、play（從第 1 段播一輪）、rest（馬達停、燈照常）。
+ */
+export type SchedulePhase = 'disabled' | 'off' | 'spinup' | 'run' | 'finishing' | 'play' | 'rest'
+
+export type ScheduleMode = 'continuous' | 'cycle'
 
 /** 定時播放的輕量狀態（/api/state、/api/playback）。 / Lightweight timed-show state. */
 export type ScheduleSummary = {
   enabled: boolean
   /** null：輸出迴圈沒在跑（--api-only）。 / null when the output loop is not running. */
   phase: SchedulePhase | null
+  mode?: ScheduleMode | null
 }
 
-export type ScheduleWindow = { start: string; end: string }
+/** 持續：整段一直轉；循環：播一輪、休息 restMinutes 分鐘（只在 cycle 時有）。 / restMinutes only for cycle. */
+export type ScheduleWindow = { start: string; end: string; mode: ScheduleMode; restMinutes?: number }
 
 export type ScheduleMotor = { unitId: number; speed: Exclude<MotorSpeed, 'stop'>; direction: MotorDirection }
 
 export type ScheduleDocument = {
-  schemaVersion: 2
+  schemaVersion: 3
   enabled: boolean
   /** 馬達在燈光一輪開始前幾秒先啟動。 / Seconds the motors start before the round. */
   spinUpSeconds: number
@@ -60,7 +67,11 @@ export type ScheduleStatus = {
   now: string
   running: boolean
   phase: SchedulePhase | null
-  /** spinup：那一輪開始的時間；finishing：這一輪結束、馬達停止的時間。 / Round start (spinup) or end (finishing). */
+  /** 目前跟隨的時段模式。 / Mode of the window the motors follow. */
+  mode: ScheduleMode | null
+  /** 循環時段：這個時段第幾輪。 / Cycle windows: round number. */
+  round: number | null
+  /** 這個階段結束的時間（持續時段的 run 沒有）。 / When the phase ends (none for continuous run). */
   phaseEndsAt: string | null
   /** 正在運轉或即將開始的時段。 / The window the motors are running for (or about to). */
   window: ScheduleWindow | null

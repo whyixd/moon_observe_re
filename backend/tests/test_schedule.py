@@ -60,9 +60,9 @@ class ValidationTests(unittest.TestCase):
     def test_normalizes_order(self):
         raw = default_schedule(UNITS)
         raw["motors"] = list(reversed(raw["motors"]))
-        raw["daily"] = [{"start": "20:00", "end": "24:00"}, {"start": "09:00", "end": "12:00"}]
+        raw["daily"] = [{"start": "20:00", "end": "24:00", "mode": "continuous"}, {"start": "09:00", "end": "12:00", "mode": "continuous"}]
         raw["dates"] = [{"date": "2026-12-01", "windows": []},
-                        {"date": "2026-11-05", "windows": [{"start": "14:00", "end": "21:00"}]}]
+                        {"date": "2026-11-05", "windows": [{"start": "14:00", "end": "21:00", "mode": "continuous"}]}]
         result = validate_schedule(raw, UNITS)
         self.assertEqual([1, 2, 3, 4, 5], [motor["unitId"] for motor in result["motors"]])
         self.assertEqual(["09:00", "20:00"], [window["start"] for window in result["daily"]])
@@ -77,23 +77,29 @@ class ValidationTests(unittest.TestCase):
         motors = default_schedule(UNITS)["motors"]
         cases = [
             ({**default_schedule(UNITS), "extra": 1}, "exactly"),
-            (changed(schemaVersion=3), "schemaVersion"),
+            (changed(schemaVersion=4), "schemaVersion"),
             (changed(schemaVersion=1), "schemaVersion"),  # v1 needs its legacy fields to be recognised
             ({**default_schedule(UNITS), "restMinutes": 10}, "exactly"),
             (changed(enabled=1), "enabled"),
             (changed(spinUpSeconds=31), "spinUpSeconds"),
             (changed(spinUpSeconds=-1), "spinUpSeconds"),
             (changed(spinUpSeconds=True), "spinUpSeconds"),
+            (changed(daily=[{"start": "18:00", "end": "20:00"}]), "mode"),
+            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "loop"}]), "mode"),
+            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "cycle"}]), "restMinutes"),
+            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "continuous", "restMinutes": 5}]), "mode"),
+            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "cycle", "restMinutes": 241}]), "restMinutes"),
+            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "cycle", "restMinutes": 1.5}]), "restMinutes"),
             (changed(motors=motors[:4]), "all 5 units"),
             (changed(motors=[*motors[:4], {**motors[0]}]), "distinct"),
             (changed(motors=[{**motors[0], "speed": "stop"}, *motors[1:]]), "speed"),
             (changed(motors=[{**motors[0], "direction": "left"}, *motors[1:]]), "direction"),
-            (changed(daily=[{"start": "18:00", "end": "18:00"}]), "end after"),
-            (changed(daily=[{"start": "22:00", "end": "02:00"}]), "end after"),
-            (changed(daily=[{"start": "24:00", "end": "24:00"}]), "HH:MM"),
-            (changed(daily=[{"start": "8:00", "end": "09:00"}]), "HH:MM"),
-            (changed(daily=[{"start": "18:00", "end": "20:00"}, {"start": "19:30", "end": "21:00"}]), "overlap"),
-            (changed(daily=[{"start": "00:00", "end": "01:00"}] * 9), "at most"),
+            (changed(daily=[{"start": "18:00", "end": "18:00", "mode": "continuous"}]), "end after"),
+            (changed(daily=[{"start": "22:00", "end": "02:00", "mode": "continuous"}]), "end after"),
+            (changed(daily=[{"start": "24:00", "end": "24:00", "mode": "continuous"}]), "HH:MM"),
+            (changed(daily=[{"start": "8:00", "end": "09:00", "mode": "continuous"}]), "HH:MM"),
+            (changed(daily=[{"start": "18:00", "end": "20:00", "mode": "continuous"}, {"start": "19:30", "end": "21:00", "mode": "continuous"}]), "overlap"),
+            (changed(daily=[{"start": "00:00", "end": "01:00", "mode": "continuous"}] * 9), "at most"),
             (changed(dates=[{"date": "2026-11-5", "windows": []}]), "YYYY-MM-DD"),
             (changed(dates=[{"date": "2026-02-30", "windows": []}]), "YYYY-MM-DD"),
             (changed(dates=[{"date": "2026-11-05", "windows": []}] * 2), "twice"),
@@ -104,30 +110,44 @@ class ValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     validate_schedule(raw, UNITS)
 
-    def test_reads_v1_documents(self):
-        v1 = {**default_schedule(UNITS), "schemaVersion": 1, "restMinutes": 10, "endFadeSeconds": 3, "enabled": True}
+    def test_reads_v1_and_v2_documents(self):
+        bare = [{"start": "18:00", "end": "20:00"}]
+        dates = [{"date": "2026-11-05", "windows": [{"start": "14:00", "end": "21:00"}]}]
+        v1 = {**document(), "schemaVersion": 1, "restMinutes": 10, "endFadeSeconds": 3, "daily": bare, "dates": dates}
         result = validate_schedule(v1, UNITS)
-        self.assertEqual(document(), result)
-        self.assertEqual(2, result["schemaVersion"])
+        self.assertEqual(3, result["schemaVersion"])
         self.assertNotIn("restMinutes", result)
+        self.assertEqual([{"start": "18:00", "end": "20:00", "mode": "cycle", "restMinutes": 10}], result["daily"])
+        self.assertEqual("cycle", result["dates"][0]["windows"][0]["mode"])
+        v2 = {**document(), "schemaVersion": 2, "daily": bare, "dates": dates}
+        result = validate_schedule(v2, UNITS)
+        self.assertEqual([{"start": "18:00", "end": "20:00", "mode": "continuous"}], result["daily"])
+        self.assertEqual("continuous", result["dates"][0]["windows"][0]["mode"])
 
     def test_adjacent_windows_are_allowed(self):
-        raw = document(daily=[{"start": "18:00", "end": "19:00"}, {"start": "19:00", "end": "20:00"}])
+        raw = document(daily=[{"start": "18:00", "end": "19:00", "mode": "continuous"}, {"start": "19:00", "end": "20:00", "mode": "continuous"}])
         self.assertEqual(2, len(raw["daily"]))
+
+
+CONTINUOUS = ("continuous", None)
+
+
+def cycle(start, end, rest):
+    return {"start": start, "end": end, "mode": "cycle", "restMinutes": rest}
 
 
 class WindowTests(unittest.TestCase):
     def setUp(self):
         self.document = document(
-            daily=[{"start": "18:00", "end": "20:00"}],
-            dates=[{"date": "2026-11-05", "windows": [{"start": "14:00", "end": "21:00"}]},
+            daily=[{"start": "18:00", "end": "20:00", "mode": "continuous"}],
+            dates=[{"date": "2026-11-05", "windows": [{"start": "14:00", "end": "21:00", "mode": "continuous"}]},
                    {"date": "2026-11-10", "windows": []}],
         )
 
     def test_special_date_replaces_daily(self):
-        self.assertEqual([(datetime(2026, 11, 4, 18), datetime(2026, 11, 4, 20))],
+        self.assertEqual([(datetime(2026, 11, 4, 18), datetime(2026, 11, 4, 20), CONTINUOUS)],
                          windows_on(self.document, date(2026, 11, 4)))
-        self.assertEqual([(datetime(2026, 11, 5, 14), datetime(2026, 11, 5, 21))],
+        self.assertEqual([(datetime(2026, 11, 5, 14), datetime(2026, 11, 5, 21), CONTINUOUS)],
                          windows_on(self.document, date(2026, 11, 5)))
         self.assertEqual([], windows_on(self.document, date(2026, 11, 10)))
 
@@ -141,25 +161,37 @@ class WindowTests(unittest.TestCase):
         self.assertIsNone(current_window(self.document, datetime(2026, 11, 10, 19)))
 
     def test_adjacent_and_overnight_windows_merge(self):
-        raw = document(daily=[{"start": "18:00", "end": "19:00"}, {"start": "19:00", "end": "20:00"}])
-        self.assertEqual((datetime(2026, 11, 4, 18), datetime(2026, 11, 4, 20)),
+        raw = document(daily=[{"start": "18:00", "end": "19:00", "mode": "continuous"}, {"start": "19:00", "end": "20:00", "mode": "continuous"}])
+        self.assertEqual((datetime(2026, 11, 4, 18), datetime(2026, 11, 4, 20), CONTINUOUS),
                          current_window(raw, datetime(2026, 11, 4, 18, 30)))
-        overnight = document(daily=[{"start": "00:00", "end": "02:00"}, {"start": "22:00", "end": "24:00"}])
-        self.assertEqual((datetime(2026, 11, 4, 22), datetime(2026, 11, 5, 2)),
+        overnight = document(daily=[{"start": "00:00", "end": "02:00", "mode": "continuous"}, {"start": "22:00", "end": "24:00", "mode": "continuous"}])
+        self.assertEqual((datetime(2026, 11, 4, 22), datetime(2026, 11, 5, 2), CONTINUOUS),
                          current_window(overnight, datetime(2026, 11, 4, 23)))
         self.assertEqual(datetime(2026, 11, 5, 22), next_show(overnight, datetime(2026, 11, 5, 1)))
+
+    def test_adjacent_windows_with_different_modes_stay_apart(self):
+        raw = document(daily=[{"start": "18:00", "end": "19:00", "mode": "continuous"},
+                              {"start": "19:00", "end": "20:00", "mode": "cycle", "restMinutes": 10},
+                              {"start": "20:00", "end": "21:00", "mode": "cycle", "restMinutes": 5}])
+        self.assertEqual((datetime(2026, 11, 4, 18), datetime(2026, 11, 4, 19), CONTINUOUS),
+                         current_window(raw, datetime(2026, 11, 4, 18, 30)))
+        self.assertEqual((datetime(2026, 11, 4, 19), datetime(2026, 11, 4, 20), ("cycle", 10)),
+                         current_window(raw, datetime(2026, 11, 4, 19, 30)))
+        self.assertEqual(datetime(2026, 11, 4, 19), next_show(raw, datetime(2026, 11, 4, 18, 30)))
+        self.assertEqual(datetime(2026, 11, 4, 20), next_show(raw, datetime(2026, 11, 4, 19, 30)))
 
     def test_next_show(self):
         self.assertEqual(datetime(2026, 11, 4, 18), next_show(self.document, datetime(2026, 11, 4, 12)))
         self.assertEqual(datetime(2026, 11, 5, 14), next_show(self.document, datetime(2026, 11, 4, 18, 30)))
         self.assertEqual(datetime(2026, 11, 11, 18), next_show(self.document, datetime(2026, 11, 9, 21)))
         self.assertIsNone(next_show(document(daily=[], dates=[]), datetime(2026, 11, 4, 12)))
-        merged = document(daily=[{"start": "18:00", "end": "19:00"}, {"start": "19:00", "end": "20:00"}])
+        merged = document(daily=[{"start": "18:00", "end": "19:00", "mode": "continuous"}, {"start": "19:00", "end": "20:00", "mode": "continuous"}])
         self.assertEqual(datetime(2026, 11, 5, 18), next_show(merged, datetime(2026, 11, 4, 18, 30)))
 
 
 class Run:
-    """Drives a Scheduler like output.stream: one frame per step, wall clock and playback advance together."""
+    """Drives a Scheduler like output.stream: one frame per step, wall clock and playback advance together,
+    and playback restarts when the scheduler says so."""
 
     FPS = 4
 
@@ -170,10 +202,15 @@ class Run:
         self.round_frames = round_frames
         self.playback = playback
         self.frames = []
+        self.positions = []
 
     def step(self, count=1):
         for _ in range(count):
-            self.frames.append(self.scheduler.advance(self.round_frames, self.playback))
+            frame = self.scheduler.advance(1 if self.frames else 0, self.round_frames, self.playback)
+            if frame.restart:
+                self.playback = 0
+            self.frames.append(frame)
+            self.positions.append(self.playback)
             self.playback += 1
             self.clock.when += timedelta(seconds=1 / self.FPS)
         return self.frames[-1]
@@ -197,7 +234,7 @@ class SchedulerTests(unittest.TestCase):
         run = Run(document(enabled=False), SHOW)
         self.assertEqual(("disabled", None), (run.step().phase, run.step().motors))
         self.assertIsNone(run.scheduler.effective_motors())
-        self.assertEqual({"enabled": False, "phase": "disabled"}, run.scheduler.summary())
+        self.assertEqual({"enabled": False, "phase": "disabled", "mode": None}, run.scheduler.summary())
 
     def test_outside_window_stops_motors_only(self):
         frame = Run(document(), OUTSIDE).step()
@@ -260,7 +297,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual("run", run.step().phase)
 
     def test_next_window_close_after_the_end_keeps_spinning(self):
-        raw = document(spinUpSeconds=5, daily=[{"start": "18:00", "end": "19:00"}, {"start": "19:02", "end": "20:00"}])
+        raw = document(spinUpSeconds=5, daily=[{"start": "18:00", "end": "19:00", "mode": "continuous"}, {"start": "19:02", "end": "20:00", "mode": "continuous"}])
         run = Run(raw, at(18, 59, 59.75), round_frames=4 * 240)  # 4-minute rounds, the current one began 18:58:30
         run.playback = 4 * 89 + 3
         self.assertEqual(["run", "run"], [run.step().phase for _ in range(2)])  # 19:00 → the 19:02 window's round
@@ -276,6 +313,79 @@ class SchedulerTests(unittest.TestCase):
         raw["motors"][1] = {"unitId": 2, "speed": "mid", "direction": "ccw"}
         self.assertEqual(("mid", "ccw"), Run(raw, SHOW).step().motors[1])
         self.assertEqual(("stop", "ccw"), Run(raw, OUTSIDE).step().motors[1])
+
+    def test_cycle_window_full_cycle(self):
+        # spin-up 1 s = 4 frames, round 8 frames, rest 1 min = 240 frames; the lights are never touched.
+        run = Run(document(spinUpSeconds=1, daily=[cycle("18:00", "20:00", 1)]), SHOW, playback=5)
+        run.step(4)
+        self.assertEqual(["spinup"] * 4, run.phases())
+        self.assertTrue(all(frame.motors == MAX_CW and not frame.restart for frame in run.frames))
+        frame = run.step()
+        self.assertEqual(("play", True, MAX_CW), (frame.phase, frame.restart, frame.motors))
+        self.assertEqual(0, run.positions[-1])  # replays from step 1
+        run.step(7)
+        self.assertEqual(["play"] * 8, run.phases(4))
+        frame = run.step()
+        self.assertEqual(("rest", STOP_CW, False), (frame.phase, frame.motors, frame.restart))
+        self.assertEqual(8, run.positions[-1])  # lights keep playing past the round
+        run.step(239)
+        self.assertEqual(["rest"] * 240, run.phases(12))
+        self.assertEqual(("spinup", MAX_CW), (run.step().phase, run.frames[-1].motors))
+        run.step(3)
+        frame = run.step()
+        self.assertEqual(("play", True), (frame.phase, frame.restart))
+        self.assertEqual({"enabled": True, "phase": "play", "mode": "cycle"}, run.scheduler.summary())
+        status = run.scheduler.status()
+        self.assertEqual(("cycle", 2, "cycle", 1), (status["mode"], status["round"], status["window"]["mode"],
+                                                   status["window"]["restMinutes"]))
+
+    def test_cycle_zero_rest_replays_without_spin_up(self):
+        run = Run(document(spinUpSeconds=1, daily=[cycle("18:00", "20:00", 0)]), SHOW)
+        run.step(4 + 8)
+        frame = run.step()
+        self.assertEqual(("play", True, MAX_CW), (frame.phase, frame.restart, frame.motors))
+        self.assertEqual(2, run.scheduler.status()["round"])
+
+    def test_cycle_zero_spin_up_plays_immediately(self):
+        frame = Run(document(spinUpSeconds=0, daily=[cycle("18:00", "20:00", 10)]), SHOW).step()
+        self.assertEqual(("play", True), (frame.phase, frame.restart))
+
+    def test_cycle_window_end_stops_motors_at_once(self):
+        for setup in (2, 4 + 3, 4 + 8 + 10):  # during spin-up, play and rest
+            with self.subTest(setup=setup):
+                run = Run(document(spinUpSeconds=1, daily=[cycle("18:00", "20:00", 1)]), SHOW)
+                run.step(setup)
+                run.clock.when = at(20, 0)
+                frame = run.step()
+                self.assertEqual(("off", STOP_CW, False), (frame.phase, frame.motors, frame.restart))
+
+    def test_enabling_mid_cycle_window_spins_up_first(self):
+        raw = document(spinUpSeconds=1, daily=[cycle("18:00", "20:00", 10)])
+        run = Run({**raw, "enabled": False}, SHOW)
+        run.step(3)
+        run.store.document = raw
+        self.assertEqual("spinup", run.step().phase)
+        run.step(4)
+        self.assertEqual(("play", 1), (run.frames[-1].phase, run.scheduler.status()["round"]))
+
+    def test_cycle_then_continuous_spins_on(self):
+        raw = document(spinUpSeconds=1, daily=[cycle("18:00", "19:00", 10), {"start": "19:00", "end": "20:00", "mode": "continuous"}])
+        run = Run(raw, at(18, 59, 59.5), playback=3)
+        run.step(2)  # 18:59:59.50 and .75 in the cycle window
+        frame = run.step()
+        self.assertEqual(("run", MAX_CW), (frame.phase, frame.motors))
+
+    def test_continuous_then_cycle_spins_up_and_replays(self):
+        raw = document(spinUpSeconds=1, daily=[{"start": "18:00", "end": "19:00", "mode": "continuous"}, cycle("19:00", "20:00", 10)])
+        run = Run(raw, at(18, 59, 59.5), playback=3)
+        self.assertEqual(["run", "run"], [run.step().phase for _ in range(2)])
+        self.assertEqual(["spinup"] * 4 + ["play"], [run.step().phase for _ in range(5)])
+        self.assertTrue(run.frames[-1].restart)
+
+    def test_off_before_a_cycle_window_reports_its_start(self):
+        run = Run(document(daily=[cycle("18:00", "20:00", 10)]), at(17, 0))
+        self.assertEqual("off", run.step().phase)
+        self.assertEqual("2026-11-04T18:00:00", run.scheduler.status()["motorStartAt"])
 
     def test_status(self):
         run = Run(document(spinUpSeconds=1), at(17, 59, 50), playback=3)
@@ -342,6 +452,13 @@ class StreamTests(unittest.TestCase):
         _, _, with_scheduler = self.run_stream(scheduler, 6, motor_provider=motors)
         _, _, without = self.run_stream(None, 6, motor_provider=motors)
         self.assertEqual(without, with_scheduler)
+
+    def test_cycle_spin_up_keeps_lights_then_replays_from_frame_zero(self):
+        raw = document(spinUpSeconds=0.05, daily=[cycle("18:00", "20:00", 10)])  # 2 frames
+        scheduler = Scheduler(MemoryStore(raw), 40, 5, now=Clock(SHOW))
+        config, preset, packets = self.run_stream(scheduler, 5)
+        expected = [self.payload(config, preset, frame, speed="max") for frame in (0, 1, 0, 1, 2)]
+        self.assertEqual(expected, packets)
 
     def test_lights_play_unchanged_and_only_motors_follow_the_window(self):
         for when, speed in ((SHOW, "max"), (OUTSIDE, "stop")):
@@ -438,7 +555,7 @@ class ApiTests(unittest.TestCase):
                     put("/api/schedule", {**document(), "spinUpSeconds": 999})
                 self.assertEqual(422, invalid.exception.code)
                 with urlopen(base + "/api/state") as response:
-                    self.assertEqual({"enabled": True, "phase": None}, json.load(response)["schedule"])
+                    self.assertEqual({"enabled": True, "phase": None, "mode": None}, json.load(response)["schedule"])
             finally:
                 server.shutdown()
                 worker.join(timeout=2)
